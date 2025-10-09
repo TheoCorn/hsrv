@@ -10,4 +10,3 @@ uint64_t _map_hash_fun(const char *key, size_t key_len) {
   return hash;
 }
 
-

@@ -1,15 +1,15 @@
-CFLAGS = --pedantic -std=gnu23 -Wall
+CFLAGS = --pedantic -std=gnu23 -Wall -Wno-pointer-arith -g3 -O0
 
 .phony: clean
 
-test: hserv.o
-	gcc test.c hserv.o -o test -luring $(CFLAGS)
+tsrv: hserv.o map.o test.c
+	gcc test.c hserv.o map.o -o tsrv -luring $(CFLAGS)
 
-hserv.o: hserv.h hserv.c default_http_responses.h map.h map.o
+hserv.o: _hserv.h hserv.h hserv.c default_http_responses.h map.h map.o
 	gcc hserv.c $(CFLAGS) -c -o hserv.o
 
 map.o: map.h map.c
 	gcc map.c $(CFLAGS) -c -o map.o
 
 clean:
-	rm test hserv.o map.o
+	rm tsrv hserv.o map.o

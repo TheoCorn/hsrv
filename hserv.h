@@ -1,4 +1,3 @@
-#include <netinet/in.h>
 #ifndef HSV_MAXIMUM_REQUEST_SIZE
 #define HSV_MAXIMUM_REQUEST_SIZE (1ULL << 13)
 #endif
@@ -12,7 +11,7 @@
 #endif
 
 #ifndef HSV_IO_URING_FREE_FIXED_FD_NR 
-#define HSV_IO_URING_FREE_FIXED_FD_NR 4096ULL
+#define HSV_IO_URING_FREE_FIXED_FD_NR 0ULL
 #endif
 
 // this allows user to register his own static file offsets
@@ -37,6 +36,7 @@
 #include <unistd.h>
 #include "map.h"
 #include <liburing.h>
+#include <netinet/in.h>
 
 /// indicates the minimum buffer GID the application may use should be accessed after hsv_init (this is not applicable now but for futre use) 
 extern uint64_t hsv_io_uring_buffer_ids_min_free; 
@@ -51,10 +51,17 @@ struct file_info {
 MAP_DEF(file_info)
 #endif
 
-struct _hsv_request {
+// indicates the end of the hsv_request.buffers i.e. if request.buffers[i] == UINT64_MAX then i-1 is the last index of the last buffer
+#define HSV_REQUEST_BUFFER_ARRAY_ENDING (~0ULL)
+
+struct hsv_request {
   uint32_t flags;
   int asock_indx; // the index into direct files containing the accepted socket
   size_t current_size;
+  struct {
+    struct file_info* file;
+    int64_t file_offset; 
+  } file_sending;
   uint64_t buffers[HSV_MAXIMUM_REQUEST_SIZE / _HSV_MIN_BUFFER_SIZE+1]; // +1 for HSV_MAXIMUM_REQUEST_SIZE != N * INPUT_URING_INPUT_BUF_SIZE
 };
 
@@ -65,6 +72,7 @@ struct hsv_params {
   struct {
   char** dirs;
   unsigned nr_dirs;
+  int pipe_size;
   } static_server;
 };
 
@@ -82,10 +90,19 @@ struct hsv_engine_t {
     void* buf_ring_backing;
   } static_server;
 
-  struct _hsv_request requests[HSV_MAXIMUM_REQUEST_NR];
+  struct hsv_request requests[HSV_MAXIMUM_REQUEST_NR];
   uint64_t dynuser_data;
+  int fixed_file_offset;
+
+  // is zeroed out before each tick
+  int input_buffer_buf_offset; 
+  // int input_buffer_buf
+  struct io_uring_buf_ring* input_buffer_ring;
 };
 
+// TODO make it return engine and let the result be out param
+// because if I change hsv_engine_t it will break existing users
+// if it is dynamiclly linked or they use an older header then the static library 
 int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params);
 int hsv_serve(struct hsv_engine_t* engine);
 
