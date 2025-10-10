@@ -1,4 +1,5 @@
 CFLAGS = --pedantic -std=gnu23 -Wall -Wno-pointer-arith -g3 -O0
+# CFLAGS = --pedantic -std=gnu23 -Wall -Wno-pointer-arith -O3 -DTHEOSL_NO_LOG
 
 .phony: clean
 

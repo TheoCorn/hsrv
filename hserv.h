@@ -51,8 +51,8 @@ struct file_info {
 MAP_DEF(file_info)
 #endif
 
-// indicates the end of the hsv_request.buffers i.e. if request.buffers[i] == UINT64_MAX then i-1 is the last index of the last buffer
-#define HSV_REQUEST_BUFFER_ARRAY_ENDING (~0ULL)
+// indicates the end of hsv_request.buffers
+#define HSV_REQUEST_BUFFER_ARRAY_ENDING (-1)
 
 struct hsv_request {
   uint32_t flags;
@@ -62,7 +62,7 @@ struct hsv_request {
     struct file_info* file;
     int64_t file_offset; 
   } file_sending;
-  uint64_t buffers[HSV_MAXIMUM_REQUEST_SIZE / _HSV_MIN_BUFFER_SIZE+1]; // +1 for HSV_MAXIMUM_REQUEST_SIZE != N * INPUT_URING_INPUT_BUF_SIZE
+  int buffers[HSV_MAXIMUM_REQUEST_SIZE / _HSV_MIN_BUFFER_SIZE+1]; // +1 for HSV_MAXIMUM_REQUEST_SIZE != N * INPUT_URING_INPUT_BUF_SIZE
 };
 
 struct hsv_params {

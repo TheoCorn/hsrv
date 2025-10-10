@@ -11,7 +11,7 @@ int main(int argc, char** argv) {
     .address4 = INADDR_ANY,
     .address6 = in6addr_any,
     .port = 3000,
-    .static_server = {.dirs = &dir, .nr_dirs = 1, .pipe_size = 1048576}
+    .static_server = {.dirs = &dir, .nr_dirs = 1, .pipe_size = (int)(1ULL << 21)}
   };
 
   struct hsv_engine_t engine;

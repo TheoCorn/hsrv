@@ -124,6 +124,7 @@ int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
     }
   }  
 
+  bool pipe_set_error_not_printed = true;
   engine->fixed_file_offset = sf.nr_fd;
   size_t mstatic_end = sf.nr_fd + (2 * HSV_MAXIMUM_REQUEST_NR);
   for (size_t i = sf.nr_fd; i < mstatic_end; i += 2) {
@@ -151,17 +152,21 @@ int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
       goto retry_pipe;
     }
     int pipe_size = fcntl64(*(sf.fd_buf + i), F_SETPIPE_SZ, params->static_server.pipe_size);
+    if (pipe_size != params->static_server.pipe_size && pipe_set_error_not_printed ) {
+      pipe_set_error_not_printed = false;
+      LOGW("failed to set pipe [%zu, %llu] size to %d is %d: %s", i, HSV_MAXIMUM_REQUEST_SIZE, params->static_server.pipe_size, pipe_size, strerror(errno));
+    }
   }
 
   for (size_t i = mstatic_end; i < sf.max; ++i) {
     sf.fd_buf[i] = -1;
   }
 
-  LOGD("file descriptors of files (nr: %zu)", sf.nr_fd);
-  for (size_t i = 0; i < sf.nr_fd; ++i) {
-    printf("%d\t", sf.fd_buf[i]);
-  }
-  putchar('\n');
+  // LOGD("file descriptors of files (nr: %zu)", sf.nr_fd);
+  // for (size_t i = 0; i < sf.nr_fd; ++i) {
+  //   printf("%d\t", sf.fd_buf[i]);
+  // }
+  // putchar('\n');
   
 
   // unsigned int flags = IORING_SETUP_COOP_TASKRUN | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_CQE32 | IORING_SETUP_R_DISABLED | IORING_SETUP_SQE128 | IORING_SETUP_SUBMIT_ALL | IORING_SETUP_NO_MMAP | IORING_SETUP_REGISTERED_FD_ONLY | IORING_SETUP_SQPOLL | IORING_SETUP_SINGLE_ISSUER;
@@ -225,6 +230,11 @@ int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
   if (2 != io_uring_submit(uring)) {
     LOGE("two sockets should have SQEs", NULL);
     exit(1);
+  }
+
+  for (size_t i = 0; i < HSV_MAXIMUM_REQUEST_NR; ++i) {
+    struct hsv_request* request = engine->requests;
+    request->buffers[0] = HSV_REQUEST_BUFFER_ARRAY_ENDING;
   }
 
   _hsv_fixed_file_arr_free(&sf);
@@ -408,8 +418,11 @@ int _hsv_load_files(struct hsv_params* params, struct hsv_engine_t* engine, stru
     }
   }
 
+  _hsv_dents_free_buffers(&dents_buffers);
   // TODO check for errors on unmaps
-  munmap(path_buf, HSV_STATIC_PATH_BUFFER_SIZE);
+  if (munmap(path_buf, HSV_STATIC_PATH_BUFFER_SIZE)) {
+    LOGW("failed to deallocate path buffer: %s", strerror(errno));
+  }
   return 0;
 }
 
@@ -651,7 +664,7 @@ void _hsv_handle_accept(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
   }
   struct hsv_request* request = &engine->requests[user_data];
   *request = (struct hsv_request)
-      { .flags = _HSV_REQUSET_FLAG_INFLIGHT, .asock_indx = cqe->res, .current_size = 0, .buffers = {UINT64_MAX} };
+      { .flags = _HSV_REQUSET_FLAG_INFLIGHT, .asock_indx = cqe->res, .current_size = 0, .buffers = {HSV_REQUEST_BUFFER_ARRAY_ENDING} };
   
 
   engine->dynuser_data = (engine->dynuser_data + 1) & (HSV_MAXIMUM_REQUEST_NR-1);
@@ -659,6 +672,19 @@ void _hsv_handle_accept(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
 
   struct io_uring_sqe* sqe = _hsv_enqueue_read(engine, request, user_data);
   LOGT("new request %lu socket: %d (readOP{user_data=%llx})",user_data, cqe->res, sqe->user_data);
+}
+
+void _hsv_dprint_requests(struct hsv_engine_t* engine) {
+  LOGD("REQUESTS START", NULL);
+
+  for (size_t i = 0; i < HSV_MAXIMUM_REQUEST_NR; ++i) {
+    struct hsv_request* request = engine->requests + i;
+    printf("\t%zu: flag=%u, sock=%d, size: %zu, file_sending={file=%d, file_offset=%ld}, buffers=[%d, %d]\n",
+           i, request->flags, request->asock_indx, request->current_size, request->file_sending.file ? request->file_sending.file->fd : -1,
+           request->file_sending.file_offset, request->buffers[0], request->buffers[1]);
+  }
+
+  LOGD("REQUESTs END", NULL);
 }
 
 void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
@@ -702,7 +728,8 @@ void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
 
   uint32_t type_str = ((((((*buffer) << 8) + *(buffer+1)) << 8) + *(buffer+2)) << 8) + *(buffer+3);
   if (type_str != get_req_start) {
-    LOGW("request should be a but is %s", buffer);
+    LOGW("invalid request %s", buffer);
+    _hsv_dprint_requests(engine);
     // TODO send error & close socket & return the buffer to the pool
     exit(1);
   }
@@ -774,8 +801,8 @@ void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
 
   struct hsv_request* request = &engine->requests[req_indx];
   request->buffers[0] = buf_id;
-  if (sizeof(request->buffers) / sizeof(uint64_t) > 1) {
-    request->buffers[1] = UINT64_MAX;
+  if (sizeof(request->buffers) / sizeof(int) > 1) {
+    request->buffers[1] = HSV_REQUEST_BUFFER_ARRAY_ENDING;
   }
   request->file_sending.file = &entry->data;
   request->file_sending.file_offset = 0;
@@ -922,11 +949,12 @@ struct io_uring_sqe* _hsv_io_uring_get(struct hsv_engine_t* engine) {
 }
 
 void _hsv_free_request_buffers(struct hsv_engine_t* engine, struct hsv_request* request) {
-  for (uint_fast16_t i = 0; i < sizeof(request->buffers) / sizeof(uint64_t); ++i) {
+  for (uint_fast16_t i = 0; i < sizeof(request->buffers) / sizeof(int); ++i) {
     uint64_t buf_id = request->buffers[i];
     if (buf_id == HSV_REQUEST_BUFFER_ARRAY_ENDING) break;
     void* buf_ptr = engine->static_server.buf_ring_backing + buf_id * INPUT_URING_INPUT_BUF_SIZE;
     _hsv_ibufring_return(engine, buf_ptr, buf_id);
+    request->buffers[i] = HSV_REQUEST_BUFFER_ARRAY_ENDING;
   }
 
   request->current_size = 0;
