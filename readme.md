@@ -4,7 +4,7 @@ It currently only supports the x86_64 architecture.
 
 # Getting up and running
 ## Building from source
-There is a dependency on `liburing`. So you might need to `sudo apt install liburing liburing-dev`.
+There is a dependency on `liburing`. So you might need to `sudo apt install liburing liburing-dev` on debian based systems or `sudo dnf install liburing liburing-devel` on REHL based systems.
 Other than that just `make`.
 
 ## Setting up the enviroment
