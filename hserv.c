@@ -280,11 +280,7 @@ int hsv_serve(struct hsv_engine_t* engine) {
           _hsv_handle_initial_send(engine, cqe);
         break;
         case _HSV_ROP_SEND_FILE_IN_PIPE:
-          // should only have an cqe on error
-          LOGD("file in pipe: req=%llu, res=%d", GET_DYN_USER_DATA(cqe->user_data), cqe->res);
-          if (UNLIKELY(cqe->res >= 0)) {
-            LOGW("send file in pipe should not produce an non error CQE: %d", cqe->res);
-          }
+          LOGT("file in pipe: req=%llu, res=%d", GET_DYN_USER_DATA(cqe->user_data), cqe->res);
           // let it be handled in the out pipe
           // else {
           //   LOGW("send file in pipe error: %d (%s) req=%llu", cqe->res, strerror(-cqe->res), GET_DYN_USER_DATA(cqe->user_data));
