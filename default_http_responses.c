@@ -1,1 +1,24 @@
+#include <unistd.h>
+#include "attributes.h"
+
+const char _hsv_message_too_many_connections[] HSV_WEAK_SYMBOL =
+    "HTTP/1.1 503 Service Unavailable\n"
+    "Content-Type: text/html;\n"
+    "Content-Length: 123\n"
+    "\n"
+    "<!doctype html>\n"
+    "<html lang=\"en\">\n"
+    "<head>\n"
+    "  <title>503 Service Unavailable</title>\n"
+    "</head>\n"
+    "<body>\n"
+    "  <h1>503 Service Unavailable</h1>\n"
+    "  <p>The server was unable to complete your request. Please try again later.</p>\n"
+    "  <p>If this problem persists, please <a href=\"https://example.com/support\">contact support</a>.</p>\n"
+    "  <p>Server logs contain details of this error with request ID: ABC-123.</p>\n"
+    "</body>\n"
+    "</html>\n"
+    ;
+
+const size_t _hsv_message_too_many_connections_size HSV_WEAK_SYMBOL = sizeof(_hsv_message_too_many_connections);
 

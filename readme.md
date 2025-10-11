@@ -10,7 +10,7 @@ Other than that just `make`.
 ## Setting up the enviroment
 Hserv expect hugepages (2MiB) to be available.
 So ensure you have some with
-`sudo bash -c "echo '8192' /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages"`.
+`sudo bash -c "echo '8192' >> /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages"`.
 That is an overkill number and only a couple of hugepages are necessary.
 
 Hserv uses pipes for `sendfile` syscall like operation.

@@ -87,6 +87,15 @@ enum ops_on_request : uint64_t {
     }\
   } while (0)
 
+#define __HSV_IO_URING_SUBMIT(uring) \
+  do { \
+    int submit_error = io_uring_submit(uring); \
+    if (submit_error < 0) { \
+      LOGE("io_uring_submit %s", strerror(-submit_error)); \
+      exit(1); \
+    }\
+  } while (0)
+
 #define _HSV_IO_URING_SUBMIT_GO(engine, lable) \
   do { \
     int submit_error = io_uring_submit(&engine->uring); \
@@ -97,7 +106,8 @@ enum ops_on_request : uint64_t {
     goto lable; \
   } while (0)
 
-inline struct io_uring_sqe* _hsv_io_uring_get(struct hsv_engine_t* engine);
+inline struct io_uring_sqe* _hsv_io_uring_get_sqe(struct hsv_engine_t* engine);
+inline struct io_uring_sqe* __hsv_io_uring_get_sqe(struct io_uring* uring); 
 
 struct linux_dirent64 {
    ino64_t        d_ino;    /* 64-bit inode number */
@@ -125,7 +135,7 @@ int _hsv_fixed_file_arr_init(struct _hsv_fixed_file_arr *sfiles);
 int _hsv_fixed_file_arr_add(struct _hsv_fixed_file_arr *sfiles, int fd);
 int _hsv_fixed_file_arr_free(struct _hsv_fixed_file_arr *sfiles);
 
-int _hsv_load_files(struct hsv_params* params, struct hsv_engine_t* engine, struct _hsv_fixed_file_arr *sf);
+extern int _hsv_load_files(struct hsv_params* params, struct hsv_engine_t* engine, struct _hsv_fixed_file_arr *sf);
 int _hsv_ss_insert_file(int fd, size_t file_size, const char* path, const char* path_end, struct hsv_engine_t* engine, struct _hsv_fixed_file_arr* sf);
 
 inline void _hsv_free_request_buffers(struct hsv_engine_t* engine, struct hsv_request* request);
@@ -157,5 +167,7 @@ static int _hsv_ss_key_buffer_init(struct hsv_engine_t* engine);
 static int _hsv_ss_key_buffer_free(struct hsv_engine_t* engine);
 
 int _hsv_read_dir_should_ingnore_file(char* dname);
+
+int _hsv_fixed_file_arr_free_fds(struct _hsv_fixed_file_arr* sfiles);
 
 #endif
