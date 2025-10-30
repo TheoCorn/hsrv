@@ -9,7 +9,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
-#include <errno.h>
 #include <unistd.h>
 #include <error.h>
 #include <sys/mman.h>
@@ -67,6 +66,7 @@ enum ops_on_request : uint64_t {
 
 #define _HSV_STATIC_FILE_READ_DENTS_BUFFER_MMAP_HPAGE_FLAGS MAP_HUGETLB | MAP_HUGE_2MB
 #define _HSV_SMALL_HUGEMAP_MMAP_FLAGS MAP_HUGETLB | MAP_HUGE_2MB
+#define _HSV_SMALL_HUGEMAP_MMAP_SIZE (1ULL << 21)
 
 // packed pages must have start 4 aligned
 #define _HSV_FIXED_FILE_ARRAY_PAGE_SIZE (1ULL << 21)
@@ -106,8 +106,13 @@ enum ops_on_request : uint64_t {
     goto lable; \
   } while (0)
 
-inline struct io_uring_sqe* _hsv_io_uring_get_sqe(struct hsv_engine_t* engine);
-inline struct io_uring_sqe* __hsv_io_uring_get_sqe(struct io_uring* uring); 
+
+#define hsv_ss_hinfo hsv_static_server_path_info;
+
+typedef uint64_t __attribute((aligned(1))) _hsv_uint64_unaligned;
+
+inline static struct io_uring_sqe* _hsv_io_uring_get_sqe(struct hsv_engine_t* engine);
+inline static struct io_uring_sqe* __hsv_io_uring_get_sqe(struct io_uring* uring); 
 
 struct linux_dirent64 {
    ino64_t        d_ino;    /* 64-bit inode number */
@@ -126,28 +131,35 @@ void _hsv_handle_initial_send(struct hsv_engine_t* engine, struct io_uring_cqe* 
 
 static inline int _hsv_send_file_chunk(struct hsv_engine_t* engine, struct hsv_request* request, uint64_t req_indx, __off64_t offset); 
 
-struct _hsv_fixed_file_arr {
-  int* fd_buf;
-  size_t nr_fd;
-  size_t max;
-};
 int _hsv_fixed_file_arr_init(struct _hsv_fixed_file_arr *sfiles);
+int _hsv_fixed_file_arr_copy(struct _hsv_fixed_file_arr* old, struct _hsv_fixed_file_arr* new);
+int _hsv_fixed_file_arr_free_fds(struct _hsv_fixed_file_arr* sfiles);
 int _hsv_fixed_file_arr_add(struct _hsv_fixed_file_arr *sfiles, int fd);
 int _hsv_fixed_file_arr_free(struct _hsv_fixed_file_arr *sfiles);
+int _hsv_fixed_file_arr_reserve(struct _hsv_fixed_file_arr* sfiles, uint32_t min_size);
 
-extern int _hsv_load_files(struct hsv_params* params, struct hsv_engine_t* engine, struct _hsv_fixed_file_arr *sf);
-int _hsv_ss_insert_file(int fd, size_t file_size, const char* path, const char* path_end, struct hsv_engine_t* engine, struct _hsv_fixed_file_arr* sf);
+int _hsv_params_pbuf_init(struct hsv_params* params, size_t initial_size, size_t extend_by);
+int64_t _hsv_params_pbuf_add(struct hsv_params* params, const char* const path, size_t path_length);
+int _hsv_params_pbuf_free(struct hsv_params* params);
+int _hsv_params_path_add(struct hsv_params* const params, const char* const path, const size_t path_length, const struct hsv_path_handler* const handler);
 
-inline void _hsv_free_request_buffers(struct hsv_engine_t* engine, struct hsv_request* request);
+// extern int _hsv_load_files(struct hsv_params* params, struct hsv_engine_t* engine, struct _hsv_fixed_file_arr *sf);
+// int _hsv_ss_insert_file(int fd, size_t file_size, const char* path, const char* path_end, struct hsv_engine_t* engine, struct _hsv_fixed_file_arr* sf);
+
+extern 
+int _hsv_load_files_in_params(struct hsv_params *params, const char *const root, const char* const mount,
+                              struct hsv_block_handler *handler); 
+
+static inline void _hsv_free_request_buffers(struct hsv_engine_t* engine, struct hsv_request* request);
 
 inline char* _hsv_add_to_path(const char* path, char* path_end, char* fname);
 
-inline void _hsv_ibufring_return(struct hsv_engine_t* engine, char* buffer, uint16_t buf_id);
+static inline void _hsv_ibufring_return(struct hsv_engine_t* engine, char* buffer, uint16_t buf_id);
 
-inline struct io_uring_sqe* _hsv_enqueue_read(struct hsv_engine_t* engine, struct hsv_request* request, uint64_t req_indx);
+static inline struct io_uring_sqe* _hsv_enqueue_read(struct hsv_engine_t* engine, struct hsv_request* request, uint64_t req_indx);
 
 
-#define _HSV_DENTS_BUFFERS_SIZE 32
+#define _HSV_DENTS_BUFFERS_SIZE 128
 struct _hsv_dents_buffers {
   void* buffers[_HSV_DENTS_BUFFERS_SIZE];
   size_t len;
@@ -155,19 +167,17 @@ struct _hsv_dents_buffers {
 
 int _hsv_read_dir(int dir_fd, const char* path, char* path_end, struct _hsv_dents_buffers* dbs, struct hsv_engine_t* engine, struct _hsv_fixed_file_arr* sf);
 
-static int _hsv_dents_buffers_init(struct _hsv_dents_buffers* db);
-static void* _hsv_dents_get(struct _hsv_dents_buffers* db);
+int _hsv_dents_buffers_init(struct _hsv_dents_buffers* db);
+void* _hsv_dents_get(struct _hsv_dents_buffers* db);
 // frees the last used buffer
-static void _hsv_dents_free_buffer(struct _hsv_dents_buffers* db);
-static void _hsv_dents_free_buffers(struct _hsv_dents_buffers* db);
+void _hsv_dents_free_buffer(struct _hsv_dents_buffers* db);
+void _hsv_dents_free_buffers(struct _hsv_dents_buffers* db);
 
 #define _HSV_SS_KEY_BUFFER_INITIAL_SIZE (1 << 21)
 #define _HSV_SS_KEY_BUFFER_INITIAL_MMAP_HPAGE_FLAGS MAP_HUGETLB | MAP_HUGE_2MB
-static int _hsv_ss_key_buffer_init(struct hsv_engine_t* engine);
-static int _hsv_ss_key_buffer_free(struct hsv_engine_t* engine);
+int _hsv_ss_key_buffer_init(struct hsv_engine_t* engine);
+int _hsv_ss_key_buffer_free(struct hsv_engine_t* engine);
 
 int _hsv_read_dir_should_ingnore_file(char* dname);
-
-int _hsv_fixed_file_arr_free_fds(struct _hsv_fixed_file_arr* sfiles);
 
 #endif

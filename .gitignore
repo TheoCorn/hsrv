@@ -2,3 +2,5 @@ tsrv
 *.o
 test
 *.a
+.cache
+compile_commands.json

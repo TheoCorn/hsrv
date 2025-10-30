@@ -1,14 +1,23 @@
 #include "_hserv.h"
+#include <theosl/utils/align.h>
 // it doesn't much matter but in the futre I might want to use the weak attribute to not have these #ifndef…
 #ifndef MAP_FILE_INFO_IMPL
 #define MAP_FILE_INFO_IMPL
-MAP_IMPL(file_info)
+MAP_IMPL(hsv_path_handler)
 #endif
 
 // this is set much higher then needed but that is OK
 uint64_t hsv_io_uring_buffer_ids_min_free = 33; 
 
 int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
+  hsv_params_dprint(params);
+  struct _hsv_fixed_file_arr sf;
+  int e;
+  if (( e = _hsv_fixed_file_arr_copy(&params->ffile_arr, &sf) )) {
+    LOGE("failed to coppy ffa: %d", e);
+    return 1;
+  }
+
   // sig pipe is stupid god I whish Linux had SO_NOSIGPIPE
   // this potentionaly breaks user code but we don't want to exit on SIGPIPE
   // and we can't just use send with MSG_NOSIGNAL :(
@@ -58,46 +67,51 @@ int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
     }
   }
 
-  if (_hsv_ss_key_buffer_init(engine)) {
-    LOGD("failed to allocate static file server map key buffer: %s", strerror(errno));
-    return -1;
-  }
+  // if (_hsv_ss_key_buffer_init(engine)) {
+  //   LOGD("failed to allocate static file server map key buffer: %s", strerror(errno));
+  //   return -1;
+  // }
   
   int ret = UINT8_MAX;
-  if (mapfile_info_init(&engine->static_server.fd_map, 4096)) {
+  if (map_hsv_path_handler_init(&engine->path_map, 4096)) {
     ret = -1;
-    goto dealloc_ss_key_buffer;
+    goto dealloc_ffa;
   }
 
-  struct _hsv_fixed_file_arr sf;
+  for (size_t i = 0; i < params->paths_nr; ++i) {
+    const char* const path = params->_pbuf + params->paths_off[i];
+    LOGT("path: %s", path);
+    // size_t path_len = params->paths_off[i+1] - params->paths_off[i];
+    size_t path_len = strlen(path);
+    LOGI("inserting into path map %s", path);
+    if (map_hsv_path_handler_set(&engine->path_map, path, path_len, &params->path_handlers[i])) {
+      goto dealloc_path_map;
+    }
+  }
+
+  // struct _hsv_fixed_file_arr sf;
+  // if (_hsv_fixed_file_arr_init(&sf)) {
+  //   // TODO I forgot to create a map free function when it's aviable put it here
+  //   ret = -2;
+  //   goto dealloc_static_files_err;
+  // }
+  // if (_hsv_load_files(params, engine, &sf)) {
+  //   _hsv_fixed_file_arr_free(&sf);
+  //   // TODO I forgot to create a map free function when it's aviable put it here
+  //   ret = 1;
+  //   goto dealloc_load_files_err;
+  // }
+
   
-  if (_hsv_fixed_file_arr_init(&sf)) {
-    // TODO I forgot to create a map free function when it's aviable put it here
-    ret = -2;
-    goto dealloc_static_files_err;
-  }
-  if (_hsv_load_files(params, engine, &sf)) {
-    _hsv_fixed_file_arr_free(&sf);
-    // TODO I forgot to create a map free function when it's aviable put it here
-    ret = 1;
-    goto dealloc_load_files_err;
-  }
+    
 
   // each request has a pipe to do zero copy file send hence 3 * MAX_REQUESTS_NR (1 socket, 1 pipe input, 1 pipe output)
   size_t min_ff_buf_size = sf.nr_fd + (3 * HSV_MAXIMUM_REQUEST_NR) + HSV_IO_URING_FREE_FIXED_FD_NR; // + HSV_IO_URING_ENTERIES_NR;
   size_t ff_buf_dyn_start = sf.nr_fd + (2 * HSV_MAXIMUM_REQUEST_NR) + HSV_IO_URING_DYN_ENTERIES_OFFSET;
   LOGT("min io uring fixed file buffer size %zu max is %zu", min_ff_buf_size, sf.max);
-  if (sf.max - sf.nr_fd < min_ff_buf_size) {
-    size_t new_len = min_ff_buf_size;
-    new_len = (new_len + _HSV_FIXED_FILE_ARRAY_PAGE_SIZE-1) & ~(_HSV_FIXED_FILE_ARRAY_PAGE_SIZE-1);
-    void* new_addr = mremap(sf.fd_buf, sf.max * sizeof(int), new_len, MREMAP_MAYMOVE);
-    if (MAP_FAILED == new_addr) {
-      // it is late I am not adding the dealloc :(
-      return 1;
-    }
-
-    sf.fd_buf = (int*) new_addr;
-    sf.max = new_len / sizeof(int);
+  if (_hsv_fixed_file_arr_reserve(&sf, min_ff_buf_size)) {
+    LOGE("failed to reserve fixed files", NULL);
+    exit(1);
   }
 
   {
@@ -124,14 +138,19 @@ int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
     }
   }  
 
+  /*
+    pipe creation using io_uring is aviable in kernel 6.16.x (2025-04-08) but that is
+    unreasonably new even for me 
+  */
   bool pipe_set_error_not_printed = true;
   engine->fixed_file_offset = sf.nr_fd;
   size_t mstatic_end = sf.nr_fd + (2 * HSV_MAXIMUM_REQUEST_NR);
   for (size_t i = sf.nr_fd; i < mstatic_end; i += 2) {
     // LOGT("putting pipe at index %zu", i);
     retry_pipe:
-    if (pipe2(sf.fd_buf + i, 0)) {
-      LOGW("failed to create a pipe ff_indx: %zu %s", i, strerror(errno));
+    int *addr = sf.fd_buf + i;
+    if (pipe2(addr, 0)) {
+      LOGW("failed to create a pipe ff_indx=%zu, ptr=%p: %s", i, (void*)addr, strerror(errno));
       
       struct rlimit64 flimit;
       if (getrlimit64(RLIMIT_NOFILE, &flimit)) {
@@ -204,7 +223,7 @@ int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
     LOGE("iouring input buffer ring backing allocation error size: %llu (this allocation may be using hugepages do you have some?)", INPUT_URING_INPUT_BUF_BACKING_SIZE);
     goto dealloc_w_ring;
   }
-  engine->static_server.buf_ring_backing = buf_ring_backing;
+  engine->buf_ring_backing = buf_ring_backing;
   for (uint16_t i = 0; i < INPUT_URING_INPUT_BUF_NR; ++i) {
     struct io_uring_buf* urb = ibufring->bufs + i;
     *urb = (struct io_uring_buf) {.bid = i, .addr = (__u64)(buf_ring_backing + i * INPUT_URING_INPUT_BUF_SIZE), .len = INPUT_URING_INPUT_BUF_SIZE, .resv = 0U};
@@ -242,16 +261,14 @@ int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
   return 0;
 
 
-  dealloc_all:
+  // dealloc_all:
   dealloc_w_ring:
   dealloc_ring_init_err:
-  dealloc_load_files_err:
-  _hsv_fixed_file_arr_free_fds(&sf);
+  dealloc_path_map:
+  map_hsv_path_handler_free(&engine->path_map);
+  // _hsv_ss_key_buffer_free(engine);
+  dealloc_ffa:
   _hsv_fixed_file_arr_free(&sf);
-  dealloc_static_files_err:
-  // TODO dealloc map
-  dealloc_ss_key_buffer:
-  _hsv_ss_key_buffer_free(engine);
   return ret;
 }
 
@@ -380,50 +397,98 @@ int _hsv_send_file_chunk(struct hsv_engine_t* engine, struct hsv_request* reques
 //   // mapfd_insert_if_not_exists(&engine->static_server.fd_map, );
 // }
 
-int fd_daf(struct file_info* data, const char* key, size_t key_len, void* arg) {
-  *data = *(struct file_info*)arg;
+int fd_daf(struct hsv_file_info* data, const char* key, size_t key_len, void* arg) {
+  *data = *(struct hsv_file_info*)arg;
   return 0;
 }
 
-int _hsv_ss_insert_file(int fd, size_t file_size, const char* path, const char* path_end, struct hsv_engine_t* engine, struct _hsv_fixed_file_arr* sf) {
-  int indx = _hsv_fixed_file_arr_add(sf, fd);
-  if (indx < 0) {
-    return -1;
-  }
+// int _hsv_ss_insert_file(int fd, size_t file_size, const char* path, const char* path_end, struct hsv_engine_t* engine, struct _hsv_fixed_file_arr* sf) {
+//   int indx = _hsv_fixed_file_arr_add(sf, fd);
+//   if (indx < 0) {
+//     return -1;
+//   }
 
-  size_t path_length = path_end - path;
+//   size_t path_length = path_end - path;
 
-  {
-    size_t len = engine->static_server.key_buf_next - engine->static_server.key_buf;
-    size_t kbs = engine->static_server.key_buf_size;
-    if ((kbs - len) < (path_length)) {
-      // TODO add MAP_FAIL check
-      mremap(engine->static_server.key_buf, kbs, 2 * kbs, MREMAP_FIXED);
-    }
-  }
+//   {
+//     size_t len = engine->static_server.key_buf_next - engine->static_server.key_buf;
+//     size_t kbs = engine->static_server.key_buf_size;
+//     if ((kbs - len) < (path_length)) {
+//       // TODO add MAP_FAIL check
+//       mremap(engine->static_server.key_buf, kbs, 2 * kbs, MREMAP_FIXED);
+//     }
+//   }
   
-  char* dest = engine->static_server.key_buf_next;
-  char* end = stpncpy(dest, path, path_length); 
-  engine->static_server.key_buf_next = end;
+//   char* dest = engine->static_server.key_buf_next;
+//   char* end = stpncpy(dest, path, path_length); 
+//   engine->static_server.key_buf_next = end;
 
-  // size_t len = end - dest + 1;
+//   // size_t len = end - dest + 1;
 
-  struct file_info fi = (struct file_info){.fd = indx, .file_size = file_size };
+//   struct hsv_file_info fi = (struct hsv_file_info){.fd = indx, .file_size = file_size };
 
-  LOGT("inserting: %.*s", (int)path_length, dest);
-  int e = mapfile_info_insert_if_not_exists(&engine->static_server.fd_map, dest, path_length, fd_daf, &fi);
-  return e;
-}
+//   LOGT("inserting: %.*s", (int)path_length, dest);
+//   int e = map_hsv_file_info_insert_if_not_exists(&engine->static_server.fd_map, dest, path_length, fd_daf, &fi);
+//   return e;
+// }
 
 int _hsv_fixed_file_arr_init(struct _hsv_fixed_file_arr *sfiles) {
   size_t bsize = (1 << 14);
-  int* buf = (int*) mmap(NULL, bsize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  int memfd = memfd_create("hsv_params_static_files", 0);
+  if (memfd == -1) {
+    LOGW("memfd_create failed: %d (%s)", errno, strerror(errno));
+    return 1;
+  }
+  if (ftruncate64(memfd, bsize)) {
+    LOGW("ftruncate failed %d (%s)", errno, strerror(errno));
+    return 1;
+  }
+  int* buf = (int*) mmap(NULL, bsize, PROT_READ | PROT_WRITE, MAP_SHARED, memfd, 0);
   if (buf == MAP_FAILED) {
-    LOGE("a huge page map failed this might be because you have no hugepages %s", strerror(errno));
+    LOGE("a mmap failed %s", strerror(errno));
     return 1;
   }
 
-  *sfiles = (struct _hsv_fixed_file_arr) {.fd_buf = buf, .nr_fd = 0ULL, .max = bsize / sizeof(int)};
+  *sfiles = (struct _hsv_fixed_file_arr) {.fd_buf = buf, .nr_fd = 0ULL, .max = bsize / sizeof(int), .memfd = memfd, .file_size = bsize, .flags = 0U};
+  return 0;
+}
+
+int _hsv_fixed_file_arr_copy(struct _hsv_fixed_file_arr* old, struct _hsv_fixed_file_arr* new) {
+  *new = *old;
+  new->flags &= ~_HSV_FIXED_FILE_ARRAY_FLAG_USE_MEMFD;
+  size_t len = sizeof(int) * old->max;
+  new->fd_buf = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FILE, old->memfd, 0);
+
+  if (new->fd_buf == MAP_FAILED) {
+    return 1;
+  }
+
+  // mmap(new->fd_buf, o)
+
+  LOGT("fd_buf = %p", (void*) new->fd_buf);
+  return 0;
+}
+
+static inline int _hsv_fixed_file_arr_change_size(struct _hsv_fixed_file_arr* sfiles, size_t new_cap) {
+  size_t old_len = sfiles->max * sizeof(int);
+  size_t new_len = new_cap * sizeof(int);
+  new_len = round_to_default_page_size(new_len);
+
+  if (sfiles->flags & _HSV_FIXED_FILE_ARRAY_FLAG_USE_MEMFD) {
+    if (ftruncate64(sfiles->memfd, new_len)) {
+      LOGE("ftruncate failed: %d (%s)", errno, strerror(errno));
+      return -3;
+    }
+  }
+  void* newaddr = mremap(sfiles->fd_buf, old_len, new_len, MREMAP_MAYMOVE);
+  if (UNLIKELY(newaddr == MAP_FAILED)) {
+    LOGW("failed to mremap fd buffer @%p(len=%zu, new_len=%zu): %d (%s)", (void*)sfiles->fd_buf, old_len, new_cap, errno, strerror(errno));
+    return -1;
+  }
+
+  sfiles->max = new_len / sizeof(int);
+  sfiles->fd_buf = newaddr;
+
   return 0;
 }
 
@@ -432,14 +497,10 @@ int _hsv_fixed_file_arr_add(struct _hsv_fixed_file_arr *sfiles, int fd) {
   LOGT("adding to fixed file array fd: %d", fd);
   if (UNLIKELY(sfiles->nr_fd == sfiles->max)) {
     size_t old_len = sfiles->max * sizeof(int);
-    size_t new_len = 2*old_len;
-    void* newaddr = mremap(sfiles->fd_buf, old_len, new_len, MREMAP_MAYMOVE);
-    if (UNLIKELY(newaddr == MAP_FAILED)) {
-      return -1;
+    size_t new_len = (2*_theosl_utils_default_pagesize) + old_len;
+    if (_hsv_fixed_file_arr_change_size(sfiles, new_len)) {
+      return -3;
     }
-
-    sfiles->max = new_len / sizeof(int);
-    sfiles->fd_buf = newaddr;
   }
 
   size_t indx = sfiles->nr_fd++;
@@ -448,7 +509,7 @@ int _hsv_fixed_file_arr_add(struct _hsv_fixed_file_arr *sfiles, int fd) {
   }
   sfiles->fd_buf[indx] = fd;
 
-  LOGT("added to fixed file_array fd: %d", fd);
+  LOGT("added to fixed file_array fd: %d@%u", fd, indx);
   return (int)indx;
 }
 
@@ -469,6 +530,12 @@ int _hsv_fixed_file_arr_free_fds(struct _hsv_fixed_file_arr* sfiles) {
   }
 
   return e;
+}
+
+int _hsv_fixed_file_arr_reserve(struct _hsv_fixed_file_arr* sfiles, uint32_t min_cap) {
+  if (min_cap <= sfiles->max) return 0;
+
+  return _hsv_fixed_file_arr_change_size(sfiles, ((size_t) min_cap) * sizeof(int));
 }
 
 int _hsv_aquire_request(uint64_t* user_data_io , struct hsv_engine_t* engine) {
@@ -539,6 +606,15 @@ void _hsv_dprint_requests(struct hsv_engine_t* engine) {
   LOGD("REQUESTs END", NULL);
 }
 
+static inline void _hsv_close_conn_after_initial_read(struct hsv_engine_t *engine, const struct io_uring_cqe *cqe, size_t req_indx, char* buffer, uint16_t buf_id) {
+    struct io_uring_sqe* close_sqe = io_uring_get_sqe(&engine->uring); 
+    io_uring_prep_close_direct(close_sqe, cqe->res);
+    close_sqe->user_data = OP_USER_DATA(_HSV_ROP_CLOSE_SOCKET, req_indx);
+
+    _hsv_ibufring_return(engine, buffer, buf_id);
+  
+}
+
 void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
 
   if (!(cqe->flags & IORING_CQE_F_BUFFER)) {
@@ -549,9 +625,9 @@ void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
   size_t req_indx = GET_DYN_USER_DATA(cqe->user_data);
   uint16_t buf_id = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
   LOGT("reading request %lu (res=%d, bufid=%u, cqe_flags=%x, ud=%llx)", req_indx, cqe->res, buf_id, cqe->flags, cqe->user_data);
-  char* buffer = (char*)engine->static_server.buf_ring_backing + buf_id * INPUT_URING_INPUT_BUF_SIZE; 
+  char* buffer = (char*)engine->buf_ring_backing + buf_id * INPUT_URING_INPUT_BUF_SIZE; 
 
-  if (cqe->res == EPIPE || cqe->res == 0) {
+  if (cqe->res == -EPIPE || cqe->res == 0) {
     _hsv_ibufring_return(engine, buffer, buf_id);
     LOGT("closing request %llu", req_indx);
    _hsv_close_socket(engine, req_indx);
@@ -607,19 +683,31 @@ void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
     exit(1);
   }
 
-  struct mapfile_info_t* fdmap = &engine->static_server.fd_map;
-  struct mapfile_info_entry* entry = mapfile_info_get(fdmap, path_start, path_len);
-  if (entry == NULL) {
-    LOGE("no such file %.*s", (int)path_len, path_start);
+  // struct map_hsv_file_info_t* fdmap = &engine->static_server.fd_map;
+  // struct map_hsv_file_info_entry* entry = map_hsv_file_info_get(fdmap, path_start, path_len);
+  struct map_hsv_path_handler_t* hmap = &engine->path_map;
+  struct map_hsv_path_handler_entry* handler = map_hsv_path_handler_get(hmap, path_start, path_len);
+
+  if (handler== NULL) {
+    LOGE("no handler for %.*s", (int)path_len, path_start);
     // LOGE("internal state error reading from a socket with not request entry found", NULL);
     // TODO send error & close socket & return the buffer to the pool
     exit(1);
   }
 
+  if (handler->data.htype != HSV_HANDLER_STATIC_FILE) {
+    _hsv_close_conn_after_initial_read(engine, cqe, req_indx, buffer, buf_id);
+    return;
+  }
+
+  const struct hsv_static_server_path *const sfh = &handler->data.info.ss_path_info;
+  const struct hsv_file_info *const finfo = &sfh->finfo;
+
+  // TODO writev better?
   static const char ok_response_start[] = "HTTP/1.1 200 OK\nContent-Type: text/html; charset=utf-8\nContent-Length: ";
   memcpy(buffer, ok_response_start, sizeof(ok_response_start) - 1);  
   size_t max_len = INPUT_URING_INPUT_BUF_SIZE - sizeof(ok_response_start)-1;
-  int len = snprintf(buffer + sizeof(ok_response_start) -1, max_len, "%li\n\n", entry->data.file_size);
+  int len = snprintf(buffer + sizeof(ok_response_start) -1, max_len, "%li\n\n", sfh->finfo.file_size);
   if (len < 0 || len >= max_len) {
     // TODO send error & close socket & return the buffer to the pool
     exit(1);
@@ -643,11 +731,13 @@ void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
   int pipe_indx_in = pipe_indx_out + 1;
   // LOGT("ffoffset=%d pipe in %d, pipe out %d", engine->fixed_file_offset, pipe_indx_in, pipe_indx_out);
 
-  io_uring_prep_splice(body_in_sqe, entry->data.fd, 0, pipe_indx_in, -1, entry->data.file_size, SPLICE_F_FD_IN_FIXED);
+  LOGT("sending file %d of size %ld", finfo->fd, finfo->file_size);
+  LOGD("splicing fixed file %d to %d len=%zu", finfo->fd, pipe_indx_in, finfo->file_size);
+  io_uring_prep_splice(body_in_sqe, finfo->fd, 0, pipe_indx_in, -1, finfo->file_size, SPLICE_F_FD_IN_FIXED);
   body_in_sqe->flags |= IOSQE_FIXED_FILE; // | IOSQE_CQE_SKIP_SUCCESS_BIT;
   body_in_sqe->user_data = OP_USER_DATA(_HSV_ROP_SEND_FILE_IN_PIPE, req_indx);
 
-  io_uring_prep_splice(body_out_sqe, pipe_indx_out, -1, req_sock_fdi, -1, entry->data.file_size, SPLICE_F_FD_IN_FIXED);
+  io_uring_prep_splice(body_out_sqe, pipe_indx_out, -1, req_sock_fdi, -1, finfo->file_size, SPLICE_F_FD_IN_FIXED);
   body_out_sqe->flags |= IOSQE_FIXED_FILE;
   body_out_sqe->user_data = OP_USER_DATA(_HSV_ROP_SEND_FILE_OUT_PIPE, req_indx);
 
@@ -656,7 +746,7 @@ void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
   if (sizeof(request->buffers) / sizeof(int) > 1) {
     request->buffers[1] = HSV_REQUEST_BUFFER_ARRAY_ENDING;
   }
-  request->file_sending.file = &entry->data;
+  request->file_sending.file = finfo;
   request->file_sending.file_offset = 0;
 
   // LOGT("using the file with fixed fd=%d of length %zu", entry->data.fd, entry->data.file_size);
@@ -693,37 +783,37 @@ void _hsv_close_socket(struct hsv_engine_t* engine, uint64_t request_index) {
 }
 
 void _hsv_ibufring_return(struct hsv_engine_t* engine, char* buffer, uint16_t buf_id) {
-  int mask = io_uring_buf_ring_mask(INPUT_URING_INPUT_BUF_NR);
+  const int mask = io_uring_buf_ring_mask(INPUT_URING_INPUT_BUF_NR);
   io_uring_buf_ring_add(engine->input_buffer_ring, buffer, INPUT_URING_INPUT_BUF_SIZE, buf_id, mask, engine->input_buffer_buf_offset++);
 }
 
-int _hsv_ss_key_buffer_init(struct hsv_engine_t* engine) {
-  char* key_buf = mmap(NULL, _HSV_SS_KEY_BUFFER_INITIAL_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | _HSV_SS_KEY_BUFFER_INITIAL_MMAP_HPAGE_FLAGS, -1, 0);
-  if (key_buf == MAP_FAILED) {
-    return 1;
-  }
+// int _hsv_ss_key_buffer_init(struct hsv_engine_t* engine) {
+//   char* key_buf = mmap(NULL, _HSV_SS_KEY_BUFFER_INITIAL_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | _HSV_SS_KEY_BUFFER_INITIAL_MMAP_HPAGE_FLAGS, -1, 0);
+//   if (key_buf == MAP_FAILED) {
+//     return 1;
+//   }
 
-  LOGT("key buffer start at %p ends at %p", key_buf, key_buf + _HSV_SS_KEY_BUFFER_INITIAL_SIZE);
-  engine->static_server.key_buf = key_buf;
-  engine->static_server.key_buf_next = key_buf;
-  engine->static_server.key_buf_size = _HSV_SS_KEY_BUFFER_INITIAL_SIZE;  
+//   LOGT("key buffer start at %p ends at %p", key_buf, key_buf + _HSV_SS_KEY_BUFFER_INITIAL_SIZE);
+//   engine->static_server.key_buf = key_buf;
+//   engine->static_server.key_buf_next = key_buf;
+//   engine->static_server.key_buf_size = _HSV_SS_KEY_BUFFER_INITIAL_SIZE;  
 
-  return 0;
-}
+//   return 0;
+// }
 
-int _hsv_ss_key_buffer_free(struct hsv_engine_t* engine) {
-  int r;
-  if ((r = munmap(engine->static_server.key_buf, engine->static_server.key_buf_size))) {
-    LOGW("memory leak failed to munmap static_server.key_buffer: %s", strerror(errno));
-  }
-  return r;
-}
+// int _hsv_ss_key_buffer_free(struct hsv_engine_t* engine) {
+//   int r;
+//   if ((r = munmap(engine->static_server.key_buf, engine->static_server.key_buf_size))) {
+//     LOGW("memory leak failed to munmap static_server.key_buffer: %s", strerror(errno));
+//   }
+//   return r;
+// }
 
 void _hsv_free_request_buffers(struct hsv_engine_t* engine, struct hsv_request* request) {
   for (uint_fast16_t i = 0; i < sizeof(request->buffers) / sizeof(int); ++i) {
     uint64_t buf_id = request->buffers[i];
     if (buf_id == HSV_REQUEST_BUFFER_ARRAY_ENDING) break;
-    void* buf_ptr = engine->static_server.buf_ring_backing + buf_id * INPUT_URING_INPUT_BUF_SIZE;
+    void* buf_ptr = engine->buf_ring_backing + buf_id * INPUT_URING_INPUT_BUF_SIZE;
     _hsv_ibufring_return(engine, buf_ptr, buf_id);
     request->buffers[i] = HSV_REQUEST_BUFFER_ARRAY_ENDING;
   }
