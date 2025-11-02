@@ -20,6 +20,11 @@ int hsv_params_init(struct hsv_params* params) {
 
   params->static_server.pipe_size =(int)(1ULL << 13);
 
+  params->default_handler.flags = 0;
+  params->default_handler.htype = HSV_HANDLER_STATIC_FILE_RAW;
+  params->default_handler.info.raw_ss_path_info.flags = HSV_RAW_STATIC_FILE_PATH_FLAG_NO_HTTP_METHOD_CHECK;
+  params->default_handler.info.raw_ss_path_info.finfo.fd = _HSV_DEFAULT_HANDLER_FINFO_FD;
+
   int e;
   if (( e = _hsv_fixed_file_arr_init(&params->ffile_arr) )) {
     LOGW("failed to init fixed file array: %d", e);
@@ -42,7 +47,7 @@ void hsv_params_dprint(struct hsv_params* params) {
     printf("p_off=%u(%s),handler: {flags: %u, htype: %u, ", off, params->_pbuf+off, handler->flags, handler->htype);
     switch (handler->htype) {
       case HSV_HANDLER_STATIC_FILE: {
-        struct hsv_static_server_path *ssp = &handler->info.ss_path_info;
+        struct hsv_static_file_path *ssp = &handler->info.ss_path_info;
         printf("ctype=%u, cencoding=%lu, finfo={fd=%d, file_size=%ld}}\n", ssp->ctype, ssp->cencodeing, ssp->finfo.fd, ssp->finfo.file_size);
       }
       break;

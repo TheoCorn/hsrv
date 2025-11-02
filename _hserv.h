@@ -27,7 +27,10 @@
 
 #include "map.h"
 #include "default_http_responses.h"
+#include "http_headers.h"
 #include "hserv.h"
+
+#define _HSV_DEFAULT_HANDLER_FINFO_FD 0
 
 #define _HSV_IO_URING_FREE_FIXED_FD_NR 0
 
@@ -110,9 +113,10 @@ enum ops_on_request : uint64_t {
 #define hsv_ss_hinfo hsv_static_server_path_info;
 
 typedef uint64_t __attribute((aligned(1))) _hsv_uint64_unaligned;
+typedef uint32_t __attribute((aligned(1))) _hsv_uint32_unaligned;
 
-inline static struct io_uring_sqe* _hsv_io_uring_get_sqe(struct hsv_engine_t* engine);
-inline static struct io_uring_sqe* __hsv_io_uring_get_sqe(struct io_uring* uring); 
+extern inline struct io_uring_sqe* _hsv_io_uring_get_sqe(struct hsv_engine_t* engine);
+extern inline struct io_uring_sqe* __hsv_io_uring_get_sqe(struct io_uring* uring); 
 
 struct linux_dirent64 {
    ino64_t        d_ino;    /* 64-bit inode number */
@@ -152,17 +156,15 @@ int _hsv_load_files_in_params(struct hsv_params *params, const char *const root,
 
 static inline void _hsv_free_request_buffers(struct hsv_engine_t* engine, struct hsv_request* request);
 
-inline char* _hsv_add_to_path(const char* path, char* path_end, char* fname);
-
 static inline void _hsv_ibufring_return(struct hsv_engine_t* engine, char* buffer, uint16_t buf_id);
 
 static inline struct io_uring_sqe* _hsv_enqueue_read(struct hsv_engine_t* engine, struct hsv_request* request, uint64_t req_indx);
 
 
-#define _HSV_DENTS_BUFFERS_SIZE 128
 struct _hsv_dents_buffers {
-  void* buffers[_HSV_DENTS_BUFFERS_SIZE];
+  void** buffers;
   size_t len;
+  size_t cap;
 };
 
 int _hsv_read_dir(int dir_fd, const char* path, char* path_end, struct _hsv_dents_buffers* dbs, struct hsv_engine_t* engine, struct _hsv_fixed_file_arr* sf);

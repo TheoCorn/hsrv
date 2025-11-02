@@ -8,14 +8,7 @@
 
 
 int main(int argc, char** argv) {
-  
-  // struct hsv_params params = (struct hsv_params) {
-  //   .address4 = INADDR_ANY,
-  //   .address6 = in6addr_any,
-  //   .port = 3000,
-  //   .static_server = {.dirs = &dir, .nr_dirs = 1, .pipe_size = (int)(1ULL << 18)}
-  // };
-
+ 
   struct hsv_params params;
   uint16_t port = 8080, sport = 4443;
 
@@ -25,17 +18,19 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  params.static_server.pipe_size = (1ULL << 21);
+
   for (int i = 1; i < argc; ++i) {
     LOGT("arg %d: ```%s```", i, argv[i]);
     if ((argv[i][0] == '-') && (argv[i][1] == '-')) {
-      if (!strcmp("port", argv[i])) {
+      if (!strcmp("port", argv[i]+2)) {
         if (!sscanf(argv[++i], "%hu", &params.port)) {
           LOGE("failed to read port number: %d", errno);
           return 1;
         }
         continue;
       }
-      if (!strcmp("sport", argv[i])) {
+      if (!strcmp("sport", argv[i]+2)) {
         if (!sscanf(argv[++i], "%hu", &params.sport)) {
           LOGE("failed to read sport number: %d", errno);
           return 1;

@@ -1,5 +1,6 @@
 #include "_hserv.h"
 #include <theosl/utils/align.h>
+
 // it doesn't much matter but in the futre I might want to use the weak attribute to not have these #ifndef…
 #ifndef MAP_FILE_INFO_IMPL
 #define MAP_FILE_INFO_IMPL
@@ -9,13 +10,81 @@ MAP_IMPL(hsv_path_handler)
 // this is set much higher then needed but that is OK
 uint64_t hsv_io_uring_buffer_ids_min_free = 33; 
 
+int setup_default_handler(struct hsv_engine_t* engine, struct _hsv_fixed_file_arr *sf) {
+  int memfd = memfd_create("default response", 0);
+  if (memfd == -1) {
+    LOGE("failed to create memfd: %d (%s)", errno, strerror(errno));
+    return -1;
+  }
+  int pipe[2];
+  int e = pipe2(pipe, 0);
+  if (e) {
+    LOGE("failed to create pipe: %d (%s)", errno, strerror(errno));
+    close(memfd);
+    return -1;
+  }
+
+  struct iovec iov;
+  iov.iov_base = (void*)_hsv_message_default_response;
+  iov.iov_len = _hsv_message_default_response_size;
+  ssize_t res = vmsplice(pipe[1], &iov, 1, 0);
+  if (res != _hsv_message_default_response_size) {
+    LOGE("failed to vmsplice message: %ld, errno=%d (%s)", res, errno, strerror(errno));
+    close(memfd);
+    close(pipe[0]);
+    return -2;
+  }
+  e = splice(pipe[0], 0, memfd, 0, _hsv_message_default_response_size, 0);
+  if (e != _hsv_message_default_response_size) {
+    LOGE("failed to splice: %d errno=%d (%s)", e, errno, strerror(errno));
+    close(pipe[0]);
+    close(memfd);
+    return -3;
+  }
+
+  if (-1 == close(pipe[0])) {
+    LOGW("failed to close pipe: %d (%s)", errno, strerror(errno));
+  }
+
+  int fdi = _hsv_fixed_file_arr_add(sf, memfd);
+  if (fdi < 0) {
+    LOGE("falied to add default handler fd to fixed file array: %d", fdi);
+    close(memfd);
+    return 1;
+  }
+
+  engine->default_handler.flags = 0;
+  engine->default_handler.htype = HSV_HANDLER_STATIC_FILE_RAW;
+  engine->default_handler.info.raw_ss_path_info.flags = HSV_RAW_STATIC_FILE_PATH_FLAG_NO_HTTP_METHOD_CHECK;
+  engine->default_handler.info.raw_ss_path_info.finfo = (struct hsv_file_info) {
+    .fd = fdi,
+    .file_size = (__off64_t)_hsv_message_default_response_size,
+  };
+
+  LOGD("default handler file=%d file_size=%ld", engine->default_handler.info.raw_ss_path_info.finfo.fd, engine->default_handler.info.raw_ss_path_info.finfo.file_size);
+  
+  return 0;
+}
+
 int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
-  hsv_params_dprint(params);
+  int ret = UINT8_MAX;
+  // LOGI("get=%lx, options=%lx", _hsv_http_method_get, _hsv_http_method_options);
+  // hsv_params_dprint(params);
   struct _hsv_fixed_file_arr sf;
   int e;
   if (( e = _hsv_fixed_file_arr_copy(&params->ffile_arr, &sf) )) {
     LOGE("failed to coppy ffa: %d", e);
     return 1;
+  }
+
+  if (params->default_handler.htype == HSV_HANDLER_STATIC_FILE_RAW &&
+    params->default_handler.info.raw_ss_path_info.finfo.fd == _HSV_DEFAULT_HANDLER_FINFO_FD) {
+     if ((ret = setup_default_handler(engine, &sf))) {
+       LOGE("failed to set up default handler", NULL);
+       goto dealloc_ffa;
+     }
+  } else {
+    engine->default_handler = params->default_handler;
   }
 
   // sig pipe is stupid god I whish Linux had SO_NOSIGPIPE
@@ -67,12 +136,7 @@ int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
     }
   }
 
-  // if (_hsv_ss_key_buffer_init(engine)) {
-  //   LOGD("failed to allocate static file server map key buffer: %s", strerror(errno));
-  //   return -1;
-  // }
-  
-  int ret = UINT8_MAX;
+ 
   if (map_hsv_path_handler_init(&engine->path_map, 4096)) {
     ret = -1;
     goto dealloc_ffa;
@@ -88,22 +152,6 @@ int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
       goto dealloc_path_map;
     }
   }
-
-  // struct _hsv_fixed_file_arr sf;
-  // if (_hsv_fixed_file_arr_init(&sf)) {
-  //   // TODO I forgot to create a map free function when it's aviable put it here
-  //   ret = -2;
-  //   goto dealloc_static_files_err;
-  // }
-  // if (_hsv_load_files(params, engine, &sf)) {
-  //   _hsv_fixed_file_arr_free(&sf);
-  //   // TODO I forgot to create a map free function when it's aviable put it here
-  //   ret = 1;
-  //   goto dealloc_load_files_err;
-  // }
-
-  
-    
 
   // each request has a pipe to do zero copy file send hence 3 * MAX_REQUESTS_NR (1 socket, 1 pipe input, 1 pipe output)
   size_t min_ff_buf_size = sf.nr_fd + (3 * HSV_MAXIMUM_REQUEST_NR) + HSV_IO_URING_FREE_FIXED_FD_NR; // + HSV_IO_URING_ENTERIES_NR;
@@ -180,13 +228,6 @@ int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
   for (size_t i = mstatic_end; i < sf.max; ++i) {
     sf.fd_buf[i] = -1;
   }
-
-  // LOGD("file descriptors of files (nr: %zu)", sf.nr_fd);
-  // for (size_t i = 0; i < sf.nr_fd; ++i) {
-  //   printf("%d\t", sf.fd_buf[i]);
-  // }
-  // putchar('\n');
-  
 
   // unsigned int flags = IORING_SETUP_COOP_TASKRUN | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_CQE32 | IORING_SETUP_R_DISABLED | IORING_SETUP_SQE128 | IORING_SETUP_SUBMIT_ALL | IORING_SETUP_NO_MMAP | IORING_SETUP_REGISTERED_FD_ONLY | IORING_SETUP_SQPOLL | IORING_SETUP_SINGLE_ISSUER;
   unsigned int flags = IORING_SETUP_CQE32 | IORING_SETUP_R_DISABLED | IORING_SETUP_SQE128 | IORING_SETUP_SUBMIT_ALL | IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_SQPOLL ;
@@ -346,22 +387,29 @@ void _hsv_handle_send_file_out_pipe(struct hsv_engine_t* engine, struct io_uring
     return;
   }
 
+  LOGT("file out pipe: req=%llu, res=%d", GET_DYN_USER_DATA(cqe->user_data), cqe->res);
+
   uint64_t req_indx = GET_DYN_USER_DATA(cqe->user_data);
 
   struct hsv_request* request = &engine->requests[req_indx];
 
-  __off64_t offset = cqe->res + request->file_sending.file_offset;
+  // if (UNLIKELY(request->file_sending.in_pipe_res != cqe->res)) {
+  //   if (request->file_sending.in_pipe_res > cqe->res) {
+      
+  //   }      
+  // }
+
+  __off64_t offset = ((__off64_t)cqe->res) + request->file_sending.file_offset;
   request->file_sending.file_offset = offset;
   __off64_t file_size = request->file_sending.file->file_size;
 
-  if (UNLIKELY(offset == file_size)) {
+  if (UNLIKELY(offset >= file_size)) {
     request->file_sending.file = NULL;
     _hsv_enqueue_read(engine, request, req_indx);
 
     return;
   };
 
-  LOGT("sending next chunk: req=%llu, offset=%ld", req_indx, offset);
   _hsv_send_file_chunk(engine, request, req_indx, offset); 
 }
 
@@ -374,7 +422,9 @@ int _hsv_send_file_chunk(struct hsv_engine_t* engine, struct hsv_request* reques
 
   int file_indx = request->file_sending.file->fd;
   __off64_t file_size = request->file_sending.file->file_size;
-  uint64_t size = file_size - offset;
+  uint64_t size = (1ULL << 21);
+
+  LOGT("sending next chunk: req=%llu, offset=%ld, len=%llu (file_size=%ld)", req_indx, offset, size, file_size);
 
   io_uring_prep_splice(body_in_sqe, file_indx, offset, pipe_indx_in, -1, size, SPLICE_F_FD_IN_FIXED);
   body_in_sqe->flags |= IOSQE_FIXED_FILE; // | IOSQE_CQE_SKIP_SUCCESS_BIT;
@@ -387,50 +437,10 @@ int _hsv_send_file_chunk(struct hsv_engine_t* engine, struct hsv_request* reques
   return 0;
 }
 
-// int _hsv_load_reg_file(int fd, const char* root, struct hsv_engine_t* engine, struct _hsv_static_files* sf) {
-//   int indx = _hsv_static_files_add(sf, fd);
-//   if (indx < 0) {
-//     LOGW("static files array insert error %d", indx);
-//     return 1;
-//   }
-
-//   // mapfd_insert_if_not_exists(&engine->static_server.fd_map, );
-// }
-
 int fd_daf(struct hsv_file_info* data, const char* key, size_t key_len, void* arg) {
   *data = *(struct hsv_file_info*)arg;
   return 0;
 }
-
-// int _hsv_ss_insert_file(int fd, size_t file_size, const char* path, const char* path_end, struct hsv_engine_t* engine, struct _hsv_fixed_file_arr* sf) {
-//   int indx = _hsv_fixed_file_arr_add(sf, fd);
-//   if (indx < 0) {
-//     return -1;
-//   }
-
-//   size_t path_length = path_end - path;
-
-//   {
-//     size_t len = engine->static_server.key_buf_next - engine->static_server.key_buf;
-//     size_t kbs = engine->static_server.key_buf_size;
-//     if ((kbs - len) < (path_length)) {
-//       // TODO add MAP_FAIL check
-//       mremap(engine->static_server.key_buf, kbs, 2 * kbs, MREMAP_FIXED);
-//     }
-//   }
-  
-//   char* dest = engine->static_server.key_buf_next;
-//   char* end = stpncpy(dest, path, path_length); 
-//   engine->static_server.key_buf_next = end;
-
-//   // size_t len = end - dest + 1;
-
-//   struct hsv_file_info fi = (struct hsv_file_info){.fd = indx, .file_size = file_size };
-
-//   LOGT("inserting: %.*s", (int)path_length, dest);
-//   int e = map_hsv_file_info_insert_if_not_exists(&engine->static_server.fd_map, dest, path_length, fd_daf, &fi);
-//   return e;
-// }
 
 int _hsv_fixed_file_arr_init(struct _hsv_fixed_file_arr *sfiles) {
   size_t bsize = (1 << 14);
@@ -462,8 +472,6 @@ int _hsv_fixed_file_arr_copy(struct _hsv_fixed_file_arr* old, struct _hsv_fixed_
   if (new->fd_buf == MAP_FAILED) {
     return 1;
   }
-
-  // mmap(new->fd_buf, o)
 
   LOGT("fd_buf = %p", (void*) new->fd_buf);
   return 0;
@@ -615,6 +623,183 @@ static inline void _hsv_close_conn_after_initial_read(struct hsv_engine_t *engin
   
 }
 
+static inline int _hsv_handle_static_file_server_read(
+                      struct hsv_engine_t* engine, struct io_uring_cqe* cqe, const char* const path,
+                      size_t path_length, enum hsv_http_request_method http_method,
+                      const struct hsv_path_handler* const hander, uint16_t buf_id, char* buffer, size_t req_indx
+                  ) {
+
+  if (http_method != HSV_HTTP_METHOD_GET) {
+    LOGD("static file handler http method is not get but %u", http_method);
+    _hsv_close_conn_after_initial_read(engine, cqe, req_indx, buffer, buf_id);
+    return 1;
+  }
+
+  const struct hsv_static_file_path *const sfh = &hander->info.ss_path_info;
+  const struct hsv_file_info *const finfo = &sfh->finfo;
+
+  /// writev better?
+  static const char* const resp_start = "HTTP/1.1 %u %s\r\nContent-Type: %s; charset=utf-8\r\nContent-Length: %lu\r\n";
+  unsigned response_code = 200;
+  const char* const resp_msg = "OK";
+  const char* const content_type = hsv_http_content_type_strings[sfh->ctype];
+  int buf_len = snprintf(buffer, INPUT_URING_INPUT_BUF_SIZE, resp_start, response_code, resp_msg, content_type, sfh->finfo.file_size);
+
+  if (sfh->cencodeing) {
+    char* ptr = buffer + buf_len;
+    size_t max_size = INPUT_URING_INPUT_BUF_SIZE - buf_len;
+    char ceb[_hsv_content_encoding_string_max_len];
+    int ceb_len = hsv_content_encoding_list_to_string(sfh->cencodeing, ceb);
+    int nlen = snprintf(ptr, max_size, "Content-Encoding: %.*s\r\n", ceb_len, ceb);
+    buf_len += nlen;
+  }
+
+  if (buf_len + 2 > INPUT_URING_INPUT_BUF_SIZE) {
+    _hsv_close_conn_after_initial_read(engine, cqe, req_indx, buffer, buf_id);
+    return 1;
+  }
+
+  *(buffer + buf_len++) = '\r';
+  *(buffer + buf_len++) = '\n';
+
+  int req_sock_fdi = engine->requests[req_indx].asock_indx;
+
+  struct io_uring_sqe* header_sqe = io_uring_get_sqe(&engine->uring);
+  struct io_uring_sqe* body_in_sqe = io_uring_get_sqe(&engine->uring);
+  struct io_uring_sqe* body_out_sqe = io_uring_get_sqe(&engine->uring);
+
+  io_uring_prep_send(header_sqe, req_sock_fdi, buffer, buf_len, MSG_NOSIGNAL);
+  header_sqe->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK; // | IOSQE_CQE_SKIP_SUCCESS_BIT;
+  header_sqe->user_data = OP_USER_DATA(_HSV_ROP_INITIAL_SEND, req_indx);
+
+  int pipe_indx_out = engine->fixed_file_offset + 2 * req_indx;
+  int pipe_indx_in = pipe_indx_out + 1;
+  // LOGT("ffoffset=%d pipe in %d, pipe out %d", engine->fixed_file_offset, pipe_indx_in, pipe_indx_out);
+
+  LOGT("sending file %d of size %ld", finfo->fd, finfo->file_size);
+  LOGD("splicing fixed file %d to %d len=%zu", finfo->fd, pipe_indx_in, finfo->file_size);
+  io_uring_prep_splice(body_in_sqe, finfo->fd, 0, pipe_indx_in, -1, finfo->file_size, SPLICE_F_FD_IN_FIXED);
+  body_in_sqe->flags |= IOSQE_FIXED_FILE; // | IOSQE_CQE_SKIP_SUCCESS_BIT;
+  body_in_sqe->user_data = OP_USER_DATA(_HSV_ROP_SEND_FILE_IN_PIPE, req_indx);
+
+  io_uring_prep_splice(body_out_sqe, pipe_indx_out, -1, req_sock_fdi, -1, finfo->file_size, SPLICE_F_FD_IN_FIXED);
+  body_out_sqe->flags |= IOSQE_FIXED_FILE;
+  body_out_sqe->user_data = OP_USER_DATA(_HSV_ROP_SEND_FILE_OUT_PIPE, req_indx);
+  struct hsv_request* request = &engine->requests[req_indx];
+  request->buffers[0] = buf_id;
+  if (sizeof(request->buffers) / sizeof(int) > 1) {
+    request->buffers[1] = HSV_REQUEST_BUFFER_ARRAY_ENDING;
+  }
+  request->file_sending.file = finfo;
+  request->file_sending.file_offset = 0;
+
+  // LOGT("using the file with fixed fd=%d of length %zu", entry->data.fd, entry->data.file_size);
+  // LOGT("sent file ffindx=%d of size %zu to %d", entry->data.fd, entry->data.file_size, req_sock_fdi);
+ return 0; 
+}
+
+static inline int _hsv_handle_raw_static_file_server_read (
+                      struct hsv_engine_t* engine, struct io_uring_cqe* cqe, const char* const path,
+                      size_t path_length, enum hsv_http_request_method http_method,
+                      const struct hsv_path_handler* const hander, uint16_t buf_id, char* buffer, size_t req_indx
+                  ) {
+  if (!(hander->info.raw_ss_path_info.flags & HSV_RAW_STATIC_FILE_PATH_FLAG_NO_HTTP_METHOD_CHECK)) {
+    if (http_method != HSV_HTTP_METHOD_GET) {
+      LOGD("static file handler http method is not get but %u", http_method);
+      _hsv_close_conn_after_initial_read(engine, cqe, req_indx, buffer, buf_id);
+      return 1;
+    }
+  }
+
+  const struct hsv_raw_static_file_path *const sfh = &hander->info.raw_ss_path_info;
+  const struct hsv_file_info *const finfo = &sfh->finfo;
+
+  int req_sock_fdi = engine->requests[req_indx].asock_indx;
+
+  struct io_uring_sqe* body_in_sqe = io_uring_get_sqe(&engine->uring);
+  struct io_uring_sqe* body_out_sqe = io_uring_get_sqe(&engine->uring);
+
+
+  int pipe_indx_out = engine->fixed_file_offset + 2 * req_indx;
+  int pipe_indx_in = pipe_indx_out + 1;
+
+  LOGT("raw sending file %d of size %ld", finfo->fd, finfo->file_size);
+  LOGD("splicing fixed file %d to %d len=%ld", finfo->fd, pipe_indx_in, finfo->file_size);
+  io_uring_prep_splice(body_in_sqe, finfo->fd, 0, pipe_indx_in, -1, finfo->file_size, SPLICE_F_FD_IN_FIXED);
+  body_in_sqe->flags |= IOSQE_FIXED_FILE;
+  body_in_sqe->user_data = OP_USER_DATA(_HSV_ROP_SEND_FILE_IN_PIPE, req_indx);
+
+  io_uring_prep_splice(body_out_sqe, pipe_indx_out, -1, req_sock_fdi, -1, finfo->file_size, SPLICE_F_FD_IN_FIXED);
+  body_out_sqe->flags |= IOSQE_FIXED_FILE;
+  body_out_sqe->user_data = OP_USER_DATA(_HSV_ROP_SEND_FILE_OUT_PIPE, req_indx);
+  struct hsv_request* request = &engine->requests[req_indx];
+  request->buffers[0] = buf_id;
+  if (sizeof(request->buffers) / sizeof(int) > 1) {
+    request->buffers[1] = HSV_REQUEST_BUFFER_ARRAY_ENDING;
+  }
+  request->file_sending.file = finfo;
+  request->file_sending.file_offset = 0;
+
+  _hsv_ibufring_return(engine, buffer, buf_id);
+ return 0; 
+}
+
+/// This is probbalbly not portable but works on my mechine :)
+enum hsv_http_request_method _hsv_scan_request_method(char* buffer, uint_fast8_t* path_start_off) {
+  uint64_t req_method_full; // = *(uint64_t*)buffer; // buffer is char* and is page aligned so this is fine
+  memcpy(&req_method_full, buffer, sizeof(uint64_t));
+  uint64_t req_method3 = req_method_full & 0xffffffff;
+  uint64_t req_method4 = req_method_full & 0xffffffffff;
+  uint64_t req_method5 = req_method_full & 0xffffffffffff;
+  uint64_t req_method6 = req_method_full & 0xffffffffffffff;
+  uint64_t req_method7 = req_method_full & UINT64_MAX;
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmultichar"
+#pragma GCC diagnostic ignored "-Wpedantic"
+  *path_start_off = 4;
+  switch (req_method3) {
+    case ' TEG':
+      return HSV_HTTP_METHOD_GET;
+    case ' TUP':
+      return HSV_HTTP_METHOD_PUT;
+  }
+
+  *path_start_off = 5;
+  switch (req_method4) {
+    case ' DAEH':
+      return HSV_HTTP_METHOD_HEAD;
+    case ' TSOP':
+      return HSV_HTTP_METHOD_POST;
+  }
+
+  *path_start_off = 6;
+  switch (req_method5) {
+    case ' ECART':
+      return HSV_HTTP_METHOD_TRACE;
+    case ' HCTAP':
+      return HSV_HTTP_METHOD_PATCH;
+  }
+
+  *path_start_off = 7;
+  switch (req_method6) {
+    case ' ETELED':
+      return HSV_HTTP_METHOD_DELETE;
+  }
+
+  *path_start_off = 8;
+  switch (req_method7) {
+    case ' TCENNOC':
+      return HSV_HTTP_METHOD_CONNECT;
+    case ' SNOITPO':
+      return HSV_HTTP_METHOD_OPTIONS;
+  }
+
+#pragma GCC diagnostic pop
+
+  return _HSV_HTTP_METHOD_LAST;
+}
+
 void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
 
   if (!(cqe->flags & IORING_CQE_F_BUFFER)) {
@@ -645,112 +830,58 @@ void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
     return;
   }
 
-  if (cqe->res < 4) {
-    LOGW("HTTP request too short: user_data: %llu", cqe->user_data);
-
-    // TODO send error & close socket & return the buffer to the pool
-    exit(1);
-  }
-
-  static const uint32_t get_req_start = (((((('G' << 8) + 'E') << 8) + 'T') << 8) + ' ');
-
-  uint32_t type_str = ((((((*buffer) << 8) + *(buffer+1)) << 8) + *(buffer+2)) << 8) + *(buffer+3);
-  if (type_str != get_req_start) {
-    LOGW("invalid request %s", buffer);
-    _hsv_dprint_requests(engine);
-    // TODO send error & close socket & return the buffer to the pool
-    exit(1);
-  }
-
-  char* path_start = buffer + 4;
-  char* ptr = path_start;
-  while (*(ptr) != ' ') { ptr++; }
-
-  static const char http_version_string[] = "HTTP/1.1\r\n";
-  /// what was this for I dont know
-  // if (ptr - buffer + sizeof(http_version_string) > cqe->res) {
-  //   LOGE("unprocesabble HTTP/1.1 request: too short\n```%s```", buffer);
-  //   // TODO send error & close socket & return the buffer to the pool
-  //   exit(1);
-  // }
-
-  size_t path_len = ptr - path_start;
-
-  if (memcmp(++ptr, http_version_string, sizeof(http_version_string) -1)) {
-    LOGE("invalid http version", NULL);
-    // is not an HTTP/1.1 request
-    // TODO send error & close socket & return the buffer to the pool
-    exit(1);
-  }
-
-  // struct map_hsv_file_info_t* fdmap = &engine->static_server.fd_map;
-  // struct map_hsv_file_info_entry* entry = map_hsv_file_info_get(fdmap, path_start, path_len);
-  struct map_hsv_path_handler_t* hmap = &engine->path_map;
-  struct map_hsv_path_handler_entry* handler = map_hsv_path_handler_get(hmap, path_start, path_len);
-
-  if (handler== NULL) {
-    LOGE("no handler for %.*s", (int)path_len, path_start);
-    // LOGE("internal state error reading from a socket with not request entry found", NULL);
-    // TODO send error & close socket & return the buffer to the pool
-    exit(1);
-  }
-
-  if (handler->data.htype != HSV_HANDLER_STATIC_FILE) {
+  uint_fast8_t path_start_off;
+  enum hsv_http_request_method http_method = _hsv_scan_request_method(buffer, &path_start_off);
+  if (http_method == _HSV_HTTP_METHOD_LAST) {
+    LOGD("UNKNOWN HTTP METHOD %.8s", buffer);
     _hsv_close_conn_after_initial_read(engine, cqe, req_indx, buffer, buf_id);
     return;
   }
 
-  const struct hsv_static_server_path *const sfh = &handler->data.info.ss_path_info;
-  const struct hsv_file_info *const finfo = &sfh->finfo;
+  char* path_start = buffer + path_start_off;
+  char* ptr = path_start;
+  while (*(ptr) != ' ') { ptr++; }
 
-  // TODO writev better?
-  static const char ok_response_start[] = "HTTP/1.1 200 OK\nContent-Type: text/html; charset=utf-8\nContent-Length: ";
-  memcpy(buffer, ok_response_start, sizeof(ok_response_start) - 1);  
-  size_t max_len = INPUT_URING_INPUT_BUF_SIZE - sizeof(ok_response_start)-1;
-  int len = snprintf(buffer + sizeof(ok_response_start) -1, max_len, "%li\n\n", sfh->finfo.file_size);
-  if (len < 0 || len >= max_len) {
-    // TODO send error & close socket & return the buffer to the pool
-    exit(1);
+  static const char http_version_string[] = "HTTP/1.1\r\n";
+
+  size_t path_len = ptr - path_start;
+
+  if (memcmp(++ptr, http_version_string, sizeof(http_version_string) -1)) {
+    _hsv_close_conn_after_initial_read(engine, cqe, req_indx, buffer, buf_id);
+    LOGD("invalid http version", NULL);
+    return;
   }
 
+  struct map_hsv_path_handler_t* hmap = &engine->path_map;
+  struct map_hsv_path_handler_entry* mhentry = map_hsv_path_handler_get(hmap, path_start, path_len);
 
-  size_t buf_len = sizeof(ok_response_start) + len;
-  int req_sock_fdi = engine->requests[req_indx].asock_indx;
+  const struct hsv_path_handler* handler;
 
-  // LOGT("initial response for request %lu (sock=%d): %s", req_indx, req_sock_fdi, buffer);
-
-  struct io_uring_sqe* header_sqe = io_uring_get_sqe(&engine->uring);
-  struct io_uring_sqe* body_in_sqe = io_uring_get_sqe(&engine->uring);
-  struct io_uring_sqe* body_out_sqe = io_uring_get_sqe(&engine->uring);
-
-  io_uring_prep_send(header_sqe, req_sock_fdi, buffer, buf_len, MSG_NOSIGNAL);
-  header_sqe->flags |= IOSQE_FIXED_FILE | IOSQE_IO_LINK; // | IOSQE_CQE_SKIP_SUCCESS_BIT;
-  header_sqe->user_data = OP_USER_DATA(_HSV_ROP_INITIAL_SEND, req_indx);
-
-  int pipe_indx_out = engine->fixed_file_offset + 2 * req_indx;
-  int pipe_indx_in = pipe_indx_out + 1;
-  // LOGT("ffoffset=%d pipe in %d, pipe out %d", engine->fixed_file_offset, pipe_indx_in, pipe_indx_out);
-
-  LOGT("sending file %d of size %ld", finfo->fd, finfo->file_size);
-  LOGD("splicing fixed file %d to %d len=%zu", finfo->fd, pipe_indx_in, finfo->file_size);
-  io_uring_prep_splice(body_in_sqe, finfo->fd, 0, pipe_indx_in, -1, finfo->file_size, SPLICE_F_FD_IN_FIXED);
-  body_in_sqe->flags |= IOSQE_FIXED_FILE; // | IOSQE_CQE_SKIP_SUCCESS_BIT;
-  body_in_sqe->user_data = OP_USER_DATA(_HSV_ROP_SEND_FILE_IN_PIPE, req_indx);
-
-  io_uring_prep_splice(body_out_sqe, pipe_indx_out, -1, req_sock_fdi, -1, finfo->file_size, SPLICE_F_FD_IN_FIXED);
-  body_out_sqe->flags |= IOSQE_FIXED_FILE;
-  body_out_sqe->user_data = OP_USER_DATA(_HSV_ROP_SEND_FILE_OUT_PIPE, req_indx);
-
-  struct hsv_request* request = &engine->requests[req_indx];
-  request->buffers[0] = buf_id;
-  if (sizeof(request->buffers) / sizeof(int) > 1) {
-    request->buffers[1] = HSV_REQUEST_BUFFER_ARRAY_ENDING;
+  if (mhentry == NULL) {
+    LOGD("using default handler for %.*s", (int)path_len, path_start);
+    handler = &engine->default_handler;  
+  } else {
+    handler = &mhentry->data;   
   }
-  request->file_sending.file = finfo;
-  request->file_sending.file_offset = 0;
 
-  // LOGT("using the file with fixed fd=%d of length %zu", entry->data.fd, entry->data.file_size);
-  // LOGT("sent file ffindx=%d of size %zu to %d", entry->data.fd, entry->data.file_size, req_sock_fdi);
+  int e;
+  switch (handler->htype) {
+    case HSV_HANDLER_STATIC_FILE:
+      e = _hsv_handle_static_file_server_read(engine, cqe, path_start, path_len, http_method, handler, buf_id, buffer, req_indx);
+    break;
+    case HSV_HANDLER_STATIC_FILE_RAW:
+      e = _hsv_handle_raw_static_file_server_read(engine, cqe, path_start, path_len, http_method, handler, buf_id, buffer, req_indx);
+    break;
+    case HSV_HANDLER_EXTERNAL_HANDLER:
+    case HSV_HANDLER_REDIRECT:
+    default:
+      e = -1;
+    break;
+  }
+
+  if (e) {
+    LOGE("HANDLER ERROR", NULL);
+  }
 }
 
 void _hsv_handle_socket_close_cqe(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {

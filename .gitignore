@@ -4,3 +4,4 @@ test
 *.a
 .cache
 compile_commands.json
+min_reproduce

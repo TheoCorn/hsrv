@@ -4,7 +4,7 @@
 const char _hsv_message_too_many_connections[] HSV_WEAK_SYMBOL =
     "HTTP/1.1 503 Service Unavailable\n"
     "Content-Type: text/html;\n"
-    "Content-Length: 123\n"
+    "Content-Length: 406\n"
     "\n"
     "<!doctype html>\n"
     "<html lang=\"en\">\n"
@@ -22,3 +22,21 @@ const char _hsv_message_too_many_connections[] HSV_WEAK_SYMBOL =
 
 const size_t _hsv_message_too_many_connections_size HSV_WEAK_SYMBOL = sizeof(_hsv_message_too_many_connections);
 
+const char _hsv_message_default_response[] =
+    "HTTP/1.1 404 NOT FOUND\r\n"
+    "Content-Type: text/html;\r\n"
+    "Content-Length: 176\r\n"
+    "\r\n"
+    "<!doctype html>\n"
+    "<html lang=\"en\">\n"
+    "<head>\n"
+    "  <title>404 NOT FOUND</title>\n"
+    "</head>\n"
+    "<body>\n"
+    "  <h1>404 NOT FOUND</h1>\n"
+    "  <p>The requested resource does not exist.</p>\n"
+    "</body>\n"
+    "</html>\n"
+    ;
+
+const size_t _hsv_message_default_response_size = sizeof(_hsv_message_default_response);

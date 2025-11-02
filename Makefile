@@ -5,10 +5,10 @@ CFLAGS = --pedantic -std=gnu23 -Wall -Wno-pointer-arith -O3 -Wstrict-overflow=5 
 .phony: clean
 
 tsrv: test.c libhserv.a
-	gcc test.c libhserv.a -o tsrv -luring $(CFLAGS)
+	gcc test.c libhserv.a -o tsrv -luring $(CFLAGS) -flto
 
-libhserv.a: hserv.o file_loading.o default_http_responses.o map.o hsv_params.o
-	ar rcs libhserv.a hserv.o file_loading.o default_http_responses.o map.o hsv_params.o
+libhserv.a: hserv.o file_loading.o default_http_responses.o map.o hsv_params.o http_headers.o
+	ar rcs libhserv.a hserv.o file_loading.o default_http_responses.o map.o hsv_params.o http_headers.o
 
 hserv.o: _hserv.h hserv.h hserv.c map.h default_http_responses.h
 	gcc hserv.c $(CFLAGS) -c -o hserv.o
@@ -22,8 +22,11 @@ hsv_params.o: _hserv.h hserv.h params.c
 default_http_responses.o: default_http_responses.c attributes.h
 	gcc default_http_responses.c $(CFLAGS) -c -o default_http_responses.o
 
+http_headers.o: http_headers.c http_headers.h
+	gcc http_headers.c $(CFLAGS) -c -o http_headers.o
+
 map.o: map.h map.c
 	gcc map.c $(CFLAGS) -c -o map.o
 
 clean:
-	rm map.o default_http_responses.o file_loading.o hserv.o hsv_params.o libhserv.a tsrv
+	rm map.o default_http_responses.o file_loading.o hserv.o hsv_params.o http_headers.o libhserv.a tsrv

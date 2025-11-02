@@ -3,8 +3,8 @@
 #endif
 
 #ifndef HSV_MAXIMUM_REQUEST_NR
-#define HSV_MAXIMUM_REQUEST_NR 1024ULL
-// #define HSV_MAXIMUM_REQUEST_NR 512ULL
+// #define HSV_MAXIMUM_REQUEST_NR 1024ULL
+#define HSV_MAXIMUM_REQUEST_NR 128ULL
 #endif
 
 #ifndef HSV_NET_BACKLOG
@@ -45,8 +45,25 @@
 /// indicates the minimum buffer GID the application may use should be accessed after hsv_init (this is not applicable now but for futre use) 
 extern uint64_t hsv_io_uring_buffer_ids_min_free; 
 
+enum hsv_http_request_method : uint_fast8_t {
+  HSV_HTTP_METHOD_GET = 0,
+  HSV_HTTP_METHOD_HEAD,
+  HSV_HTTP_METHOD_POST,
+  HSV_HTTP_METHOD_PUT,
+  HSV_HTTP_METHOD_DELETE,
+  HSV_HTTP_METHOD_CONNECT,
+  HSV_HTTP_METHOD_OPTIONS,
+  HSV_HTTP_METHOD_TRACE,
+  HSV_HTTP_METHOD_PATCH,
+
+  _HSV_HTTP_METHOD_LAST // must be last in the enum
+};
+
+extern const char*const hsv_http_request_method_strings[]; // indexed by hsv_http_request_method
+
 enum hsv_handler_type : uint8_t {
   HSV_HANDLER_STATIC_FILE = 0,
+  HSV_HANDLER_STATIC_FILE_RAW,
   HSV_HANDLER_REDIRECT,
   HSV_HANDLER_EXTERNAL_HANDLER,
 };
@@ -56,9 +73,17 @@ struct hsv_file_info {
   __off64_t file_size;
 };
 
-struct hsv_static_server_path {
+struct hsv_static_file_path {
   enum hsv_content_type_id ctype;
   hsv_content_encoding_list_t cencodeing;
+  struct hsv_file_info finfo;
+};
+
+enum hsv_raw_static_file_path_flags : uint32_t {
+  HSV_RAW_STATIC_FILE_PATH_FLAG_NO_HTTP_METHOD_CHECK = 1
+};
+struct hsv_raw_static_file_path {
+  uint32_t flags;
   struct hsv_file_info finfo;
 };
 
@@ -82,7 +107,7 @@ struct hsv_external_handler {
 
 #ifndef HSV_FMAP_H
 #define HSV_FMAP_H
-MAP_DEF(hsv_static_server_path)
+MAP_DEF(hsv_static_file_path)
 #endif
 
 enum hsv_static_file_block_flags : uint32_t {
@@ -97,7 +122,7 @@ enum hsv_static_file_block_flags : uint32_t {
 
 struct hsv_static_file_block {
   union {
-  Map(hsv_static_server_path) fmap;
+  Map(hsv_static_file_path) fmap;
   char* src_dir;
   };
   uint32_t flags;
@@ -125,7 +150,8 @@ struct hsv_path_handler {
   uint32_t flags;
   enum hsv_handler_type htype;
   union {
-    struct hsv_static_server_path ss_path_info;  
+    struct hsv_static_file_path ss_path_info;  
+    struct hsv_raw_static_file_path raw_ss_path_info;  
     struct hsv_redirect_path redirect_path_info;
     struct hsv_external_handler external_hadler_info;
   } info;
@@ -155,6 +181,7 @@ struct hsv_request {
   struct {
     struct hsv_file_info const* file;
     int64_t file_offset; 
+    int in_pipe_res;
   } file_sending;
   int buffers[HSV_MAXIMUM_REQUEST_SIZE / _HSV_MIN_BUFFER_SIZE+1]; // +1 for HSV_MAXIMUM_REQUEST_SIZE != N * INPUT_URING_INPUT_BUF_SIZE
 };
@@ -177,6 +204,8 @@ struct hsv_params {
   uint16_t sport; // SECURE PORT (HTTPS port)
   struct in_addr address4;
   struct in6_addr address6;
+
+  struct hsv_path_handler default_handler;
 
   struct hsv_block_handler* block_handler;
   const char*const * block_paths;
@@ -236,6 +265,8 @@ struct hsv_engine_t {
   int input_buffer_buf_offset; 
   // int input_buffer_buf
   struct io_uring_buf_ring* input_buffer_ring;
+
+  struct hsv_path_handler default_handler;
 };
 
 // TODO make it return engine and let the result be out param
