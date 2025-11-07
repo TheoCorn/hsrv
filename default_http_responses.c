@@ -1,7 +1,7 @@
 #include <unistd.h>
 #include "attributes.h"
 
-const char _hsv_message_too_many_connections[] HSV_WEAK_SYMBOL =
+const char _hsv_message_too_many_connections[] HSV_WEAK_SYMBOL _HSV_PUBLIC_ABI =
     "HTTP/1.1 503 Service Unavailable\n"
     "Content-Type: text/html;\n"
     "Content-Length: 406\n"
@@ -20,9 +20,9 @@ const char _hsv_message_too_many_connections[] HSV_WEAK_SYMBOL =
     "</html>\n"
     ;
 
-const size_t _hsv_message_too_many_connections_size HSV_WEAK_SYMBOL = sizeof(_hsv_message_too_many_connections);
+const size_t _hsv_message_too_many_connections_size HSV_WEAK_SYMBOL _HSV_PUBLIC_ABI = sizeof(_hsv_message_too_many_connections)-1;
 
-const char _hsv_message_default_response[] =
+const char _hsv_message_default_response[] _HSV_PUBLIC_ABI =
     "HTTP/1.1 404 NOT FOUND\r\n"
     "Content-Type: text/html;\r\n"
     "Content-Length: 176\r\n"
@@ -39,4 +39,4 @@ const char _hsv_message_default_response[] =
     "</html>\n"
     ;
 
-const size_t _hsv_message_default_response_size = sizeof(_hsv_message_default_response);
+const size_t _hsv_message_default_response_size _HSV_PUBLIC_ABI = sizeof(_hsv_message_default_response)-1;

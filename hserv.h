@@ -45,6 +45,7 @@
 #include "http_headers.h"
 #include "path_tree.h"
 #include "mbufcache.h"
+#include "attributes.h"
 
 /// indicates the minimum buffer GID the application may use should be accessed after hsv_init (this is not applicable now but for futre use) 
 extern uint64_t hsv_io_uring_buffer_ids_min_free; 
@@ -316,14 +317,14 @@ struct hsv_engine_t {
 // TODO make it return engine and let the result be out param
 // because if I change hsv_engine_t it will break existing users
 // if it is dynamiclly linked or they use an older header then the static library 
-int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params);
-int hsv_serve(struct hsv_engine_t* engine);
+_HSV_PUBLIC_ABI int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params);
+_HSV_PUBLIC_ABI int hsv_serve(struct hsv_engine_t* engine);
 
-int hsv_params_init(struct hsv_params* params);
-int hsv_params_init_net(struct hsv_params* params, struct in_addr addr4, struct in6_addr addr6, uint16_t port, uint16_t sport);
-int hsv_params_init_default_ip(struct hsv_params* params, uint16_t port, uint16_t sport);
-int hsv_params_add_path(struct hsv_params* params, const char* const path, struct hsv_path_handler* handler);
-int hsv_params_add_block(struct hsv_params* params, const char* const path, struct hsv_block_handler* handler);
-void hsv_params_dprint(struct hsv_params* params);
+_HSV_PUBLIC_ABI int hsv_params_init(struct hsv_params* params);
+_HSV_PUBLIC_ABI int hsv_params_init_net(struct hsv_params* params, struct in_addr addr4, struct in6_addr addr6, uint16_t port, uint16_t sport);
+_HSV_PUBLIC_ABI int hsv_params_init_default_ip(struct hsv_params* params, uint16_t port, uint16_t sport);
+_HSV_PUBLIC_ABI int hsv_params_add_path(struct hsv_params* params, const char* const path, struct hsv_path_handler* handler);
+_HSV_PUBLIC_ABI int hsv_params_add_block(struct hsv_params* params, const char* const path, struct hsv_block_handler* handler);
+_HSV_PUBLIC_ABI void hsv_params_dprint(struct hsv_params* params);
 
 #endif

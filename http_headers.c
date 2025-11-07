@@ -1,7 +1,8 @@
 #include "http_headers.h"
 #include <string.h>
+#include "attributes.h"
 
-const char* const hsv_http_content_type_strings[] = {
+const char* const hsv_http_content_type_strings[] _HSV_PUBLIC_ABI = {
   "text/html",
   "text/plain",
   "text/javascript",
@@ -24,13 +25,13 @@ const char* const hsv_http_content_type_strings[] = {
   "font/ttf",
 };
 
-const char* const hsv_http_content_encoding_strings[] = {
+const char* const hsv_http_content_encoding_strings[] _HSV_PUBLIC_ABI = {
   "gzip", "compress", "deflate", "br", "zstd", "dcb", "dcz"
 };
 
-size_t _hsv_content_encoding_string_max_len = sizeof("gzip, compress, deflate, br, zstd, dcb, dcz");
+size_t _hsv_content_encoding_string_max_len _HSV_PUBLIC_ABI = sizeof("gzip, compress, deflate, br, zstd, dcb, dcz");
 
-const char*const hsv_http_request_method_strings[] = {
+const char*const hsv_http_request_method_strings[] _HSV_PUBLIC_ABI = {
   "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"
 };
 

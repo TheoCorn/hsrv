@@ -1,10 +1,14 @@
 tsrv
-*.o
+tsrv_so
 test
-*.a
 .cache
 compile_commands.json
 min_reproduce
 cert.pem
 key.pem
+
+*.o
+*.a
+*.so
 *.log
+*.elog

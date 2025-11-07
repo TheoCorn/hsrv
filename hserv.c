@@ -7,7 +7,7 @@ MAP_IMPL(hsv_path_handler)
 #endif
 
 // this is set much higher then needed but that is OK
-uint64_t hsv_io_uring_buffer_ids_min_free = 33; 
+uint64_t hsv_io_uring_buffer_ids_min_free _HSV_PUBLIC_ABI = 33; 
 
 int setup_default_handler(struct hsv_engine_t* engine, struct _hsv_fixed_file_arr *sf) {
   int memfd = memfd_create("default response", 0);
@@ -134,7 +134,7 @@ int _hsv_bind_listen(const struct hsv_params* const params, uint16_t port, int *
 }
 
 
-int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
+_HSV_PUBLIC_ABI int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
   int ret = UINT8_MAX;
       
   struct _hsv_fixed_file_arr sf;
@@ -393,7 +393,7 @@ int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
 }
 
 
-int hsv_serve(struct hsv_engine_t* engine) {
+_HSV_PUBLIC_ABI int hsv_serve(struct hsv_engine_t* engine) {
   while (true) {
     LOGI("START OF TICK", NULL);
     engine->input_buffer_buf_offset = 0;
