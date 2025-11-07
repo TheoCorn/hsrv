@@ -13,7 +13,7 @@ const char* const hsv_http_content_type_strings[] = {
   "image/jpeg",
   "image/raw",
   "image/png",
-  "image/svg",
+  "image/svg+xml",
   "image/gif",
   "application/pdf",
   "text/csv",

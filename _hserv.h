@@ -23,6 +23,8 @@
 #include <netinet/ip.h>
 #include <sys/resource.h>
 
+#include <openssl/err.h>
+
 #include <theosl/log.h>
 
 #include "map.h"
@@ -46,6 +48,8 @@
 enum ops_on_request : uint64_t {
   _HSV_ROP_IPV4_ACCEPT = ((~0ULL) >> _HSV_DYN_USER_DATA_SHIFT),
   _HSV_ROP_IPV6_ACCEPT = (((~0ULL) >> _HSV_DYN_USER_DATA_SHIFT) -1),
+  _HSV_ROP_IPV4_SEC_ACCEPT = (((~0ULL) >> _HSV_DYN_USER_DATA_SHIFT) -2),
+  _HSV_ROP_IPV6_SEC_ACCEPT = (((~0ULL) >> _HSV_DYN_USER_DATA_SHIFT) -3),
   _HSV_ROP_READ = 0,
   _HSV_ROP_INITIAL_SEND,
   _HSV_ROP_SEND_FILE_IN_PIPE,
@@ -53,6 +57,11 @@ enum ops_on_request : uint64_t {
   _HSV_ROP_CLOSE_SOCKET,
   _HSV_ROP_SEND_ERROR,
   _HSV_ROP_CLOSE_SOCKET_IMIDIATE,
+  _HSV_ROP_SSL_READ,
+  _HSV_ROP_SSL_WRITE,
+  _HSV_ROP_CANCEL_READ,
+  _HSV_ROP_CANCEL_WRITE,
+  _HSV_ROP_SSL_SETSOCKOPT,
 };
 
 // must be a pow2 number
@@ -74,7 +83,10 @@ enum ops_on_request : uint64_t {
 // packed pages must have start 4 aligned
 #define _HSV_FIXED_FILE_ARRAY_PAGE_SIZE (1ULL << 21)
 
-#define _HSV_REQUSET_FLAG_INFLIGHT (1U)
+enum _hsv_request_flags {
+  _HSV_REQUSET_FLAG_INFLIGHT = (1U),
+  _HSV_REQUSET_FLAG_SSL_READ_INFLIGHT = (2U),
+};
 
 #else
   #error "non x86_64 platforms are not supported because I am lazy"
@@ -115,9 +127,6 @@ enum ops_on_request : uint64_t {
 typedef uint64_t __attribute((aligned(1))) _hsv_uint64_unaligned;
 typedef uint32_t __attribute((aligned(1))) _hsv_uint32_unaligned;
 
-extern inline struct io_uring_sqe* _hsv_io_uring_get_sqe(struct hsv_engine_t* engine);
-extern inline struct io_uring_sqe* __hsv_io_uring_get_sqe(struct io_uring* uring); 
-
 struct linux_dirent64 {
    ino64_t        d_ino;    /* 64-bit inode number */
    off64_t        d_off;    /* Not an offset; see getdents() */
@@ -125,15 +134,6 @@ struct linux_dirent64 {
    unsigned char  d_type;   /* File type */
    char           d_name[]; /* Filename (null-terminated) */
 };
-
-void _hsv_handle_accept(struct hsv_engine_t* engine, struct io_uring_cqe* cqe);
-void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe);
-void _hsv_handle_socket_close_cqe(struct hsv_engine_t* engine, struct io_uring_cqe* cqe);
-void _hsv_close_socket(struct hsv_engine_t* engine, uint64_t request_index);
-void _hsv_handle_send_file_out_pipe(struct hsv_engine_t* engine, struct io_uring_cqe* cqe);
-void _hsv_handle_initial_send(struct hsv_engine_t* engine, struct io_uring_cqe* cqe);
-
-static inline int _hsv_send_file_chunk(struct hsv_engine_t* engine, struct hsv_request* request, uint64_t req_indx, __off64_t offset); 
 
 int _hsv_fixed_file_arr_init(struct _hsv_fixed_file_arr *sfiles);
 int _hsv_fixed_file_arr_copy(struct _hsv_fixed_file_arr* old, struct _hsv_fixed_file_arr* new);
@@ -153,12 +153,6 @@ int _hsv_params_path_add(struct hsv_params* const params, const char* const path
 extern 
 int _hsv_load_files_in_params(struct hsv_params *params, const char *const root, const char* const mount,
                               struct hsv_block_handler *handler); 
-
-static inline void _hsv_free_request_buffers(struct hsv_engine_t* engine, struct hsv_request* request);
-
-static inline void _hsv_ibufring_return(struct hsv_engine_t* engine, char* buffer, uint16_t buf_id);
-
-static inline struct io_uring_sqe* _hsv_enqueue_read(struct hsv_engine_t* engine, struct hsv_request* request, uint64_t req_indx);
 
 
 struct _hsv_dents_buffers {

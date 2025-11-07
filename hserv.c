@@ -1,5 +1,4 @@
-#include "_hserv.h"
-#include <theosl/utils/align.h>
+#include "__hserv.h"
 
 // it doesn't much matter but in the futre I might want to use the weak attribute to not have these #ifndef…
 #ifndef MAP_FILE_INFO_IMPL
@@ -66,10 +65,78 @@ int setup_default_handler(struct hsv_engine_t* engine, struct _hsv_fixed_file_ar
   return 0;
 }
 
+int _hsv_bind_listen(const struct hsv_params* const params, uint16_t port, int *_ipv4sock, int *_ipv6sock) {
+  int ipv4sock = -1, ipv6sock = -1;
+  int sock_opt = 1;
+
+  if (params->flags[0] & HSV_PARAMS_IPV4_BIND) {
+    ipv4sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (-1 == ipv4sock) {
+      return 1;
+    }
+    setsockopt(ipv4sock, SOL_SOCKET, SO_REUSEADDR, &sock_opt, sizeof(sock_opt));
+  
+    struct sockaddr_in ipv4_addr;
+    ipv4_addr.sin_family = AF_INET;
+    ipv4_addr.sin_addr = params->address4;
+    ipv4_addr.sin_port = htons(port);
+
+    if (bind(ipv4sock, &ipv4_addr, sizeof(struct sockaddr_in))) {
+      LOGE("failed to bind ipv4 socket %s", strerror(errno));
+      goto close_sock_ret;
+    }
+    if (listen(ipv4sock, HSV_NET_BACKLOG)) {
+      LOGE("failed to listen on IPv4 sock %s", strerror(errno));
+      goto close_sock_ret;
+    }
+  }
+
+  if (params->flags[0] & HSV_PARAMS_IPV6_BIND) {
+    ipv6sock = socket(AF_INET6, SOCK_STREAM, 0);
+    if (-1 == ipv6sock) {
+      goto close_sock_ret;
+    }
+
+    setsockopt(ipv6sock, SOL_SOCKET, SO_REUSEADDR, &sock_opt, sizeof(sock_opt));
+    setsockopt(ipv6sock, IPPROTO_IPV6, IPV6_V6ONLY, &sock_opt, sizeof(sock_opt));
+
+
+    struct sockaddr_in6 ipv6_addr;
+    ipv6_addr.sin6_family = AF_INET6;
+    ipv6_addr.sin6_addr = params->address6;
+    ipv6_addr.sin6_port = htons(port);
+  
+    if (bind(ipv6sock, &ipv6_addr, sizeof(ipv6_addr))) {
+      LOGE("failed to bind ipv6 socket %s", strerror(errno));
+      goto close_sock_ret;
+    }
+
+    if (listen(ipv6sock, HSV_NET_BACKLOG)) {
+      LOGE("failed to listen on IPv6 sock %s", strerror(errno));
+      goto close_sock_ret;
+    }
+  }
+ 
+
+  *_ipv4sock = ipv4sock;
+  *_ipv6sock = ipv6sock;
+  return 0;
+
+  close_sock_ret:
+    if (ipv4sock != -1 && -1 == close(ipv4sock)) {
+      LOGW("failed to close ipv6sock fd=%d: %d (%s)", ipv6sock, errno, strerror(errno));
+    }
+    if (ipv6sock != -1 && -1 == close(ipv6sock)) {
+      LOGW("failed to close ipv4sock fd=%d: %d (%s)", ipv4sock, errno, strerror(errno));
+    }
+
+  return 1;
+}
+
+
 int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
   int ret = UINT8_MAX;
-  // LOGI("get=%lx, options=%lx", _hsv_http_method_get, _hsv_http_method_options);
-  // hsv_params_dprint(params);
+      
   struct _hsv_fixed_file_arr sf;
   int e;
   if (( e = _hsv_fixed_file_arr_copy(&params->ffile_arr, &sf) )) {
@@ -95,47 +162,30 @@ int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
   memset(engine->requests, 0, sizeof(engine->requests));
   engine->dynuser_data = 0;
 
-  int ipv4sock = socket(AF_INET, SOCK_STREAM, 0);
-  int opt = 1;
-  setsockopt(ipv4sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-  int ipv6sock = socket(AF_INET6, SOCK_STREAM, 0);
-  setsockopt(ipv6sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-  setsockopt(ipv6sock, IPPROTO_IPV6, IPV6_V6ONLY, &opt, sizeof(opt));
-  
-
-  // TODO update goto lables to close sockets …, switch from return to goto dealloc handler
-
-  {
-    struct sockaddr_in ipv4_addr;
-    ipv4_addr.sin_family = AF_INET;
-    ipv4_addr.sin_addr = params->address4;
-    ipv4_addr.sin_port = htons(params->port);
-
-    if (bind(ipv4sock, &ipv4_addr, sizeof(struct sockaddr_in))) {
-      LOGE("failed to bind ipv4 socket %s", strerror(errno));
-      return 1;
-    }
-
-    struct sockaddr_in6 ipv6_addr;
-    ipv6_addr.sin6_family = AF_INET6;
-    ipv6_addr.sin6_addr = params->address6;
-    ipv6_addr.sin6_port = ipv4_addr.sin_port;
-    
-    if (bind(ipv6sock, &ipv6_addr, sizeof(ipv6_addr))) {
-      LOGE("failed to bind ipv6 socket %s", strerror(errno));
-      return 1;
-    }
-
-    if (listen(ipv6sock, HSV_NET_BACKLOG)) {
-      LOGE("failed to listen on IPv6 sock %s", strerror(errno));
-      return 1;
-    }
-    if (listen(ipv4sock, HSV_NET_BACKLOG)) {
-      LOGE("failed to listen on IPv4 sock %s", strerror(errno));
-      return 1;
+  // int ipv4sock = -1, ipv6sock = -1, ipv4secsock = -1, ipv6secsock = -1;
+  int sockets[4] = {-1, -1, -1, -1};
+  const int *ipv4sock = &sockets[0];
+  const int *ipv6sock = &sockets[1];
+  const int *ipv4secsock = &sockets[2];
+  const int *ipv6secsock = &sockets[3];
+  if (params->port != HSV_PARAMS_PORT_NO_BIND) {
+    if ((ret = _hsv_bind_listen(params, params->port, &sockets[0], &sockets[1]))) {
+      LOGE("failed to bind and listen port %u", params->port);
+      goto dealloc_ffa;
     }
   }
 
+  if (params->sport != HSV_PARAMS_PORT_NO_BIND) {
+    if ((ret = _hsv_bind_listen(params, params->sport, &sockets[2], &sockets[3]))) {
+      LOGE("failed to bind and listen secure port %u", params->port);
+      goto dealloc_port;
+    }
+
+    SSL_library_init();
+    SSL_CTX *sslctx = engine->tls.ctx = SSL_CTX_new(TLS_server_method());
+    SSL_CTX_use_certificate_file(sslctx, params->tls.cert_path, SSL_FILETYPE_PEM);
+    SSL_CTX_use_PrivateKey_file(sslctx, params->tls.pkey_path, SSL_FILETYPE_PEM);
+  }
  
   if (map_hsv_path_handler_init(&engine->path_map, 4096)) {
     ret = -1;
@@ -229,7 +279,6 @@ int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
     sf.fd_buf[i] = -1;
   }
 
-  // unsigned int flags = IORING_SETUP_COOP_TASKRUN | IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_CQE32 | IORING_SETUP_R_DISABLED | IORING_SETUP_SQE128 | IORING_SETUP_SUBMIT_ALL | IORING_SETUP_NO_MMAP | IORING_SETUP_REGISTERED_FD_ONLY | IORING_SETUP_SQPOLL | IORING_SETUP_SINGLE_ISSUER;
   unsigned int flags = IORING_SETUP_CQE32 | IORING_SETUP_R_DISABLED | IORING_SETUP_SQE128 | IORING_SETUP_SUBMIT_ALL | IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_SQPOLL ;
   struct io_uring* uring = &engine->uring;
   ret = io_uring_queue_init(HSV_IO_URING_ENTERIES_NR, uring, flags);
@@ -272,46 +321,77 @@ int hsv_init(struct hsv_engine_t* engine, struct hsv_params* params) {
   io_uring_buf_ring_init(ibufring);
   io_uring_buf_ring_advance(ibufring, INPUT_URING_INPUT_BUF_NR);
 
-  struct io_uring_sqe* accept4_sqe = io_uring_get_sqe(uring);
-  struct io_uring_sqe* accept6_sqe = io_uring_get_sqe(uring);
-  io_uring_prep_multishot_accept_direct(accept4_sqe, ipv4sock, NULL, 0, 0);
-  accept4_sqe->user_data = OP_USER_DATA(_HSV_ROP_IPV4_ACCEPT, 0);
-  // accept4_sqe->file_index = IORING_FILE_INDEX_ALLOC;
+  // dont check if SQEs NULL because the sq ring is free
+  if (*ipv4sock != -1) {
+    struct io_uring_sqe* sqe = io_uring_get_sqe(uring);
+    io_uring_prep_multishot_accept_direct(sqe, *ipv4sock, NULL, 0, 0);
+    sqe->user_data = OP_USER_DATA(_HSV_ROP_IPV4_ACCEPT, 0);
+  }
 
-  io_uring_prep_multishot_accept_direct(accept6_sqe, ipv6sock, NULL, 0, 0);
-  accept4_sqe->user_data = OP_USER_DATA(_HSV_ROP_IPV6_ACCEPT, 0);
-  // accept4_sqe->file_index = IORING_FILE_INDEX_ALLOC;
+  if (*ipv6sock) {
+    struct io_uring_sqe* sqe = io_uring_get_sqe(uring);
+    io_uring_prep_multishot_accept_direct(sqe, *ipv6sock, NULL, 0, 0);
+    sqe->user_data = OP_USER_DATA(_HSV_ROP_IPV6_ACCEPT, 0);
+  }
+
+  if (*ipv4secsock != -1) {
+    struct io_uring_sqe* sqe = io_uring_get_sqe(uring);
+    io_uring_prep_multishot_accept_direct(sqe, *ipv4secsock, NULL, 0, 0);
+    sqe->user_data = OP_USER_DATA(_HSV_ROP_IPV4_SEC_ACCEPT, 0);
+  } 
+
+  if (*ipv6secsock != -1) {
+    struct io_uring_sqe* sqe = io_uring_get_sqe(uring);
+    io_uring_prep_multishot_accept_direct(sqe, *ipv6secsock, NULL, 0, 0);
+    sqe->user_data = OP_USER_DATA(_HSV_ROP_IPV6_SEC_ACCEPT, 0);
+  } 
 
   if (io_uring_enable_rings(uring)) {
     LOGE("Failed to enable rings", NULL);
     exit(1);
   }
 
-  if (2 != io_uring_submit(uring)) {
-    LOGE("two sockets should have SQEs", NULL);
-    exit(1);
-  }
+  io_uring_submit(uring);
+  //   LOGE("two sockets should have SQEs", NULL);
+  //   exit(1);
 
   for (size_t i = 0; i < HSV_MAXIMUM_REQUEST_NR; ++i) {
     struct hsv_request* request = engine->requests;
-    request->buffers[0] = HSV_REQUEST_BUFFER_ARRAY_ENDING;
+    request->buffers[0].type = _HSV_REQUEST_BUFFER_NONE;
   }
+
+  size_t buf_caps[_HSV_MBUFCACHE_NR_SIZES] = {0};
+  buf_caps[0] = HSV_MAXIMUM_REQUEST_NR;
+  if (_hsv_mbufcache_init(&engine->buf_cache, buf_caps)) {
+    LOGE("failed to initilize mbufcache: %d", ret);
+    ret = 1;
+    goto dealloc_all;
+  } 
 
   // _hsv_fixed_file_arr_free_fds(&sf);
   _hsv_fixed_file_arr_free(&sf);
   return 0;
 
 
-  // dealloc_all:
+  dealloc_all:
   dealloc_w_ring:
   dealloc_ring_init_err:
   dealloc_path_map:
   map_hsv_path_handler_free(&engine->path_map);
   // _hsv_ss_key_buffer_free(engine);
+  dealloc_port:
+  {
+    for (int i = 0; i < 4; ++i) {
+      if (sockets[i] != -1 && close(sockets[i])) {        
+        LOGW("failed to close port %d: %d (%s)", sockets[i], errno, strerror(errno));
+      }
+    }
+  }
   dealloc_ffa:
   _hsv_fixed_file_arr_free(&sf);
   return ret;
 }
+
 
 int hsv_serve(struct hsv_engine_t* engine) {
   while (true) {
@@ -332,6 +412,20 @@ int hsv_serve(struct hsv_engine_t* engine) {
           LOGD("ACCEPTED A IPV6 socket", NULL);
         case _HSV_ROP_IPV4_ACCEPT:  
           _hsv_handle_accept(engine, cqe);  
+        break;
+        case _HSV_ROP_IPV6_SEC_ACCEPT:
+          LOGD("ACCEPTED A IPV6 socket", NULL);
+        case _HSV_ROP_IPV4_SEC_ACCEPT:
+          _hsv_handle_sec_accept(engine, cqe);
+        break;
+        case _HSV_ROP_SSL_WRITE:
+          _hsv_handle_ssl_write(engine, cqe);
+        break;
+        case _HSV_ROP_SSL_READ:
+          _hsv_handle_ssl_read(engine, cqe);
+        break;
+        case _HSV_ROP_SSL_SETSOCKOPT:
+          _hsv_handle_ssl_setsockopt(engine, cqe);
         break;
         case _HSV_ROP_READ:
           _hsv_handle_read(engine, cqe);
@@ -360,6 +454,7 @@ int hsv_serve(struct hsv_engine_t* engine) {
         break;
         case _HSV_ROP_CLOSE_SOCKET_IMIDIATE:
           LOGW("failed to close a socket that was above the accept limit sock_indx=0x%llx", GET_DYN_USER_DATA(cqe->user_data));
+        break;
 
         default:
           LOGW("user data does not match any operation %llx", cqe->user_data);
@@ -399,12 +494,13 @@ void _hsv_handle_send_file_out_pipe(struct hsv_engine_t* engine, struct io_uring
   //   }      
   // }
 
-  __off64_t offset = ((__off64_t)cqe->res) + request->file_sending.file_offset;
-  request->file_sending.file_offset = offset;
-  __off64_t file_size = request->file_sending.file->file_size;
+  struct _hsv_request_data_send_file * const sfd = &request->data.file_sending;
+  __off64_t offset = ((__off64_t)cqe->res) + sfd->file_offset;
+  sfd->file_offset = offset;
+  __off64_t file_size = sfd->file->file_size;
 
   if (UNLIKELY(offset >= file_size)) {
-    request->file_sending.file = NULL;
+    sfd->file = NULL;
     _hsv_enqueue_read(engine, request, req_indx);
 
     return;
@@ -420,8 +516,9 @@ int _hsv_send_file_chunk(struct hsv_engine_t* engine, struct hsv_request* reques
   int pipe_indx_out = engine->fixed_file_offset + 2 * req_indx;
   int pipe_indx_in = pipe_indx_out + 1;
 
-  int file_indx = request->file_sending.file->fd;
-  __off64_t file_size = request->file_sending.file->file_size;
+  struct _hsv_request_data_send_file * const sfd = &request->data.file_sending;
+  int file_indx = sfd->file->fd;
+  __off64_t file_size = sfd->file->file_size;
   uint64_t size = (1ULL << 21);
 
   LOGT("sending next chunk: req=%llu, offset=%ld, len=%llu (file_size=%ld)", req_indx, offset, size, file_size);
@@ -566,34 +663,210 @@ int _hsv_aquire_request(uint64_t* user_data_io , struct hsv_engine_t* engine) {
   return 0;
 }
 
+static inline void _hsv_prep_immediate_socket_close(struct hsv_engine_t *engine, struct io_uring_cqe *cqe) {
+  struct io_uring_sqe* close_sqe = _hsv_io_uring_get_sqe(engine);
+  io_uring_prep_close_direct(close_sqe, cqe->res);
+  close_sqe->user_data = CHANGE_USER_DATA_OP(_HSV_ROP_CLOSE_SOCKET_IMIDIATE, cqe->res);
+  close_sqe->flags |= IOSQE_CQE_SKIP_SUCCESS_BIT;
+}
+
+static inline int _hsv_ssl_enque_write(struct hsv_engine_t* engine, struct hsv_request *request, uint64_t req_id, BIO *net_bio) {
+  if (request->buffers[__HSV_REQUEST_BUFFER_WRITE_BUFFER_INDEX].type != _HSV_REQUEST_BUFFER_NONE) {
+    return 0;
+  }
+  LOGT("ssl enque write to reqid=%lu", req_id);
+  char *buffer = _hsv_mbufcache_get(&engine->buf_cache, _HSV_MBUFCACHE_4K_INDX);
+  const size_t bsize = 4096;
+  if (!buffer) {
+    buffer = mmap(NULL, bsize, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);      
+    if (buffer == MAP_FAILED) {
+      LOGE("failed to get buffer for SSL write: %d (%s)", errno, strerror(errno));
+      return 1;
+    }
+  }
+  size_t read_request = BIO_ctrl_get_read_request(net_bio);
+  BIO_read(net_bio, buffer, read_request & (bsize-1));
+  struct io_uring_sqe* sqe = io_uring_get_sqe(&engine->uring);
+  io_uring_prep_write(sqe, request->asock_indx, buffer, read_request, 0);
+  sqe->flags |= IOSQE_FIXED_FILE;
+  sqe->user_data = CHANGE_USER_DATA_OP(_HSV_ROP_SSL_WRITE, req_id);
+
+  request->buffers[__HSV_REQUEST_BUFFER_WRITE_BUFFER_INDEX].type = _HSV_REQUEST_BUFFER_IOV;
+  request->buffers[__HSV_REQUEST_BUFFER_WRITE_BUFFER_INDEX].data.iovec.iov_base = buffer;
+  request->buffers[__HSV_REQUEST_BUFFER_WRITE_BUFFER_INDEX].data.iovec.iov_len = bsize;
+  
+  return 0;
+}
+
+void _hsv_post_handshake_setup(struct hsv_engine_t *engine, uint64_t reqid) {
+  LOGI("HANDSHAKE DONE for reqid=%lu", reqid); 
+
+  struct hsv_request *request = &engine->requests[reqid];
+  struct io_uring_sqe *ulp_sqe = _hsv_io_uring_get_sqe(engine);
+  // setsockopt(int fd, int level, int optname, const void *optval, socklen_t optlen)
+  io_uring_prep_cmd_sock(ulp_sqe, SOCKET_URING_OP_SETSOCKOPT, request->asock_indx, SOL_TCP, TCP_ULP, "tls", sizeof("tls"));
+  ulp_sqe->user_data = OP_USER_DATA(_HSV_ROP_SSL_SETSOCKOPT, reqid);
+  ulp_sqe->flags |= IOSQE_FIXED_FILE;
+
+  // struct io_uring_sqe *tx_sqe = _hsv_io_uring_get_sqe(engine);
+  // io_uring_prep_cmd_sock(tx_sqe, SOCKET_URING_OP_SETSOCKOPT, request->asock_indx, SOL_TLS, TLS_TX, )
+}
+
+static inline void _hsv_ssl_close_request(struct hsv_engine_t *engine, uint64_t reqid) {
+  struct io_uring_sqe *rsqe = _hsv_io_uring_get_sqe(engine);
+  struct io_uring_sqe *wsqe = _hsv_io_uring_get_sqe(engine);
+
+  uint64_t rud = CHANGE_USER_DATA_OP(_HSV_ROP_SSL_READ, reqid);
+  io_uring_prep_cancel(rsqe, &rud, IORING_ASYNC_CANCEL_ALL);
+  rsqe->user_data = OP_USER_DATA(_HSV_ROP_CANCEL_READ, reqid);
+
+  uint64_t wud = CHANGE_USER_DATA_OP(_HSV_ROP_SSL_WRITE, reqid);
+  io_uring_prep_cancel(wsqe, &wud, IORING_ASYNC_CANCEL_ALL);
+  wsqe->user_data = OP_USER_DATA(_HSV_ROP_CANCEL_WRITE, reqid);
+
+  _hsv_close_request(engine, reqid);
+}
+
+static inline void _hsv_do_ssl_accept(struct hsv_engine_t* engine, struct hsv_request *request, uint64_t req_id) {
+  LOGT("do_ssl_accept start: reqid=%zu", req_id);
+  if (UNLIKELY((request->flags & _HSV_REQUSET_FLAG_INFLIGHT) == 0)) {
+    return;
+  }
+  struct _hsv_request_data_ssl_accept *ssl_data = &request->data.ssl_accept;
+  SSL * const ssl = ssl_data->ssl;
+  BIO * net_bio = ssl_data->net_bio;
+  int ret = SSL_accept(ssl);
+  LOGT("SSL_accept ret=%d", ret);
+  if (ret == -1) {
+    int e = SSL_get_error(ssl, ret);
+    size_t pending = BIO_ctrl_pending(net_bio);
+    if (pending > 0) {
+      LOGT("SSL want to write %zu bytes", pending);
+      if (_hsv_ssl_enque_write(engine, request, req_id, net_bio)) {
+        return;
+      }
+    }
+    switch (e) {
+      case SSL_ERROR_WANT_READ: {
+        if (request->flags & _HSV_REQUSET_FLAG_SSL_READ_INFLIGHT) {
+          LOGT("ssl read in progress skipping", NULL);
+          return;
+        }
+        struct io_uring_sqe* sqe = io_uring_get_sqe(&engine->uring);
+        io_uring_prep_read(sqe, request->asock_indx, NULL, INPUT_URING_INPUT_BUF_SIZE, 0);
+        sqe->flags |= IOSQE_FIXED_FILE | IOSQE_BUFFER_SELECT;
+        sqe->user_data = CHANGE_USER_DATA_OP(_HSV_ROP_SSL_READ, req_id);
+        sqe->buf_group = INPUT_URING_INPUT_BUF_GID;
+        LOGT("SSL want read: reqid=%u", req_id);
+      }
+      break;
+
+      case SSL_ERROR_WANT_WRITE: {
+        LOGT("SSL want write: reqid=%u", req_id);
+        if (request->buffers[__HSV_REQUEST_BUFFER_WRITE_BUFFER_INDEX].type != _HSV_REQUEST_BUFFER_NONE) {
+          LOGT("write allready in progress skipping", NULL);
+          return;
+        }
+        int e = _hsv_ssl_enque_write(engine, request, req_id, net_bio);
+        if (e) {
+          _hsv_ssl_close_request(engine, req_id);
+          return;
+        }
+      }
+      break;
+      default:
+        LOGE("unknown SSL ERROR: %d", e);
+        ERR_print_errors_fp(stdout);
+        _hsv_ssl_close_request(engine, req_id);
+        return;
+    }
+  } else if (ret == 0) {
+    _hsv_ssl_close_request(engine, req_id);
+    return;
+  } else if (ret == 1) {
+    _hsv_post_handshake_setup(engine, req_id);
+  }
+ 
+}
+
+static inline struct hsv_request* _hsv_accept_sec_request(struct hsv_engine_t *engine, uint64_t req_indx, struct io_uring_cqe *cqe) {
+  struct hsv_request* request = &engine->requests[req_indx];
+  *request = (struct hsv_request)
+      { .flags = _HSV_REQUSET_FLAG_INFLIGHT, .asock_indx = cqe->res};
+
+  return request;
+}
+
+void _hsv_handle_sec_accept(struct hsv_engine_t* engine, struct io_uring_cqe *cqe) {
+  if (cqe->res < 0) {
+    LOGE("failed to accept socket because %s", strerror(-errno));
+    return;
+  }
+
+  SSL *ssl = SSL_new(engine->tls.ctx);
+  if (!ssl) {
+    LOGE("failed to create SSL object: ", NULL);
+    ERR_print_errors_fp(stdout);
+
+    _hsv_prep_immediate_socket_close(engine, cqe);
+    return;
+  }
+
+  BIO *ssl_bio, *net_bio;
+  int e = BIO_new_bio_pair(&ssl_bio, 0, &net_bio, 0);
+  if (!e) {
+    LOGE("failed to create bio pair: ", NULL);
+    ERR_print_errors_fp(stdout);
+
+    _hsv_prep_immediate_socket_close(engine, cqe);
+    return;
+  }
+
+  SSL_set_bio(ssl, ssl_bio, ssl_bio);
+
+  uint64_t user_data = engine->dynuser_data;
+  if (_hsv_aquire_request(&user_data, engine)) {
+    LOGE("failed to aquire request", NULL);
+    _hsv_prep_immediate_socket_close(engine, cqe);
+    return;
+  }
+  const uint64_t req_indx = user_data;
+
+  struct hsv_request *request = _hsv_accept_sec_request(engine, req_indx, cqe);
+  request->state = HSV_REQUEST_STATE_SSL_ACCEPT;
+  request->data.ssl_accept = (struct _hsv_request_data_ssl_accept) {
+    .net_bio = net_bio,
+    .ssl_bio = ssl_bio,
+    .ssl = ssl
+  };
+
+  LOGT("starting TLS handshake", NULL);
+ 
+  _hsv_do_ssl_accept(engine, request, req_indx);
+}
+
+
 void _hsv_handle_accept(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
   if (cqe->res < 0) {
     LOGE("failed to accept socket because %s", strerror(-errno));
     return;
   }
 
-  struct io_uring * uring = &engine->uring;
-
   uint64_t user_data = engine->dynuser_data; 
   if (_hsv_aquire_request(&user_data, engine)) {
-    struct io_uring_sqe* send_sqe = io_uring_get_sqe(uring);
-    struct io_uring_sqe* close_sqe = io_uring_get_sqe(uring); 
-    // WARN TODO check for get sqe error
+    struct io_uring_sqe* send_sqe = _hsv_io_uring_get_sqe(engine);
+
     io_uring_prep_send(send_sqe, cqe->res, _hsv_message_too_many_connections, _hsv_message_too_many_connections_size, MSG_NOSIGNAL);
     send_sqe->user_data = CHANGE_USER_DATA_OP(_HSV_ROP_SEND_ERROR, user_data);
     // it is ok not to send cqe because it does not use a buffer as it's backing store
     send_sqe->flags |= IOSQE_FIXED_FILE | IOSQE_CQE_SKIP_SUCCESS | IOSQE_IO_HARDLINK;
 
-    io_uring_prep_close_direct(close_sqe, cqe->res);
-    close_sqe->user_data = CHANGE_USER_DATA_OP(_HSV_ROP_CLOSE_SOCKET_IMIDIATE, cqe->res);
-    close_sqe->flags |= IOSQE_CQE_SKIP_SUCCESS_BIT;
+    _hsv_prep_immediate_socket_close(engine, cqe);
     return;
   }
-  struct hsv_request* request = &engine->requests[user_data];
-  *request = (struct hsv_request)
-      { .flags = _HSV_REQUSET_FLAG_INFLIGHT, .asock_indx = cqe->res, .current_size = 0, .buffers = {HSV_REQUEST_BUFFER_ARRAY_ENDING} };
-  
 
+  struct hsv_request* request = _hsv_accept_sec_request(engine, user_data, cqe);
+  
   engine->dynuser_data = (engine->dynuser_data + 1) & (HSV_MAXIMUM_REQUEST_NR-1);
   LOGT("new dyn user data: %llu", engine->dynuser_data);
 
@@ -606,9 +879,9 @@ void _hsv_dprint_requests(struct hsv_engine_t* engine) {
 
   for (size_t i = 0; i < HSV_MAXIMUM_REQUEST_NR; ++i) {
     struct hsv_request* request = engine->requests + i;
-    printf("\t%zu: flag=%u, sock=%d, size: %zu, file_sending={file=%d, file_offset=%ld}, buffers=[%d, %d]\n",
-           i, request->flags, request->asock_indx, request->current_size, request->file_sending.file ? request->file_sending.file->fd : -1,
-           request->file_sending.file_offset, request->buffers[0], request->buffers[1]);
+    printf("\t%zu: flag=%u, sock=%d, file_sending={file=%d, file_offset=%ld}, buffers=[%d, %d]\n",
+           i, request->flags, request->asock_indx, request->data.file_sending.file ? request->data.file_sending.file->fd : -1,
+           request->data.file_sending.file_offset, request->buffers[0].type, request->buffers[1].type);
   }
 
   LOGD("REQUESTs END", NULL);
@@ -622,6 +895,8 @@ static inline void _hsv_close_conn_after_initial_read(struct hsv_engine_t *engin
     _hsv_ibufring_return(engine, buffer, buf_id);
   
 }
+
+// static inline int _hsv_read_headers(char* const buffer, size_t buffer_len) {  }
 
 static inline int _hsv_handle_static_file_server_read(
                       struct hsv_engine_t* engine, struct io_uring_cqe* cqe, const char* const path,
@@ -686,12 +961,13 @@ static inline int _hsv_handle_static_file_server_read(
   body_out_sqe->flags |= IOSQE_FIXED_FILE;
   body_out_sqe->user_data = OP_USER_DATA(_HSV_ROP_SEND_FILE_OUT_PIPE, req_indx);
   struct hsv_request* request = &engine->requests[req_indx];
-  request->buffers[0] = buf_id;
-  if (sizeof(request->buffers) / sizeof(int) > 1) {
-    request->buffers[1] = HSV_REQUEST_BUFFER_ARRAY_ENDING;
+  if (_hsv_request_buffer_input_buffer_add(request, buf_id)) {
+    LOGE("failed to add buffer closing socket", NULL);
+    _hsv_close_request(engine, req_indx);
+    return 1;
   }
-  request->file_sending.file = finfo;
-  request->file_sending.file_offset = 0;
+  request->data.file_sending.file = finfo;
+  request->data.file_sending.file_offset = 0;
 
   // LOGT("using the file with fixed fd=%d of length %zu", entry->data.fd, entry->data.file_size);
   // LOGT("sent file ffindx=%d of size %zu to %d", entry->data.fd, entry->data.file_size, req_sock_fdi);
@@ -733,12 +1009,8 @@ static inline int _hsv_handle_raw_static_file_server_read (
   body_out_sqe->flags |= IOSQE_FIXED_FILE;
   body_out_sqe->user_data = OP_USER_DATA(_HSV_ROP_SEND_FILE_OUT_PIPE, req_indx);
   struct hsv_request* request = &engine->requests[req_indx];
-  request->buffers[0] = buf_id;
-  if (sizeof(request->buffers) / sizeof(int) > 1) {
-    request->buffers[1] = HSV_REQUEST_BUFFER_ARRAY_ENDING;
-  }
-  request->file_sending.file = finfo;
-  request->file_sending.file_offset = 0;
+  request->data.file_sending.file = finfo;
+  request->data.file_sending.file_offset = 0;
 
   _hsv_ibufring_return(engine, buffer, buf_id);
  return 0; 
@@ -800,10 +1072,10 @@ enum hsv_http_request_method _hsv_scan_request_method(char* buffer, uint_fast8_t
   return _HSV_HTTP_METHOD_LAST;
 }
 
-void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
 
+void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
   if (!(cqe->flags & IORING_CQE_F_BUFFER)) {
-    LOGE("the CQE shoud use a buffer: %s", strerror(-cqe->res));
+    LOGE("the CQE shoud use a buffer: %s; \tcqe{res=%d, ud=%llx}", strerror(-cqe->res), cqe->res, cqe->user_data);
     exit(1);
   }
 
@@ -815,7 +1087,7 @@ void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
   if (cqe->res == -EPIPE || cqe->res == 0) {
     _hsv_ibufring_return(engine, buffer, buf_id);
     LOGT("closing request %llu", req_indx);
-   _hsv_close_socket(engine, req_indx);
+   _hsv_close_request(engine, req_indx);
    return;
   }
 
@@ -884,31 +1156,32 @@ void _hsv_handle_read(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
   }
 }
 
+
 void _hsv_handle_socket_close_cqe(struct hsv_engine_t* engine, struct io_uring_cqe* cqe) {
   uint64_t req_indx = GET_DYN_USER_DATA(cqe->user_data);
+  LOGD("closed socket of request=%lu", req_indx);
   struct hsv_request* request = &engine->requests[req_indx];
 
   if (cqe->res < 0) {
     LOGE("failed to close socket of %llu (user_data=0x%llx) is closed: res=%d flags=%x", GET_DYN_USER_DATA(cqe->user_data), cqe->user_data, cqe->res, cqe->flags);
   }
 
+  _hsv_free_request_buffers(engine, request);
   request->flags = 0U;
-  request->file_sending.file = NULL;
+  request->state = HSV_REQUEST_STATE_UNINITIALIZED;
 }
 
-void _hsv_close_socket(struct hsv_engine_t* engine, uint64_t request_index) {
+
+void _hsv_close_request(struct hsv_engine_t* engine, uint64_t request_index) {
   struct io_uring_sqe* cs_sqe;
-  get_cs_sqe:
-  cs_sqe = io_uring_get_sqe(&engine->uring);
-  if (!cs_sqe) {
-    _HSV_IO_URING_SUBMIT(engine);
-    goto get_cs_sqe;
-  }
+  cs_sqe = _hsv_io_uring_get_sqe(engine);
 
   struct hsv_request* request = &engine->requests[request_index];
-  _hsv_free_request_buffers(engine, request);
+  // _hsv_free_request_buffers(engine, request);
   io_uring_prep_close_direct(cs_sqe, request->asock_indx);
   io_uring_sqe_set_data64(cs_sqe, OP_USER_DATA(_HSV_ROP_CLOSE_SOCKET, request_index));
+
+  request->flags &= ~_HSV_REQUSET_FLAG_INFLIGHT;
 
   LOGT("closing socket %d of %u", request->asock_indx, request_index);
 }
@@ -940,18 +1213,6 @@ void _hsv_ibufring_return(struct hsv_engine_t* engine, char* buffer, uint16_t bu
 //   return r;
 // }
 
-void _hsv_free_request_buffers(struct hsv_engine_t* engine, struct hsv_request* request) {
-  for (uint_fast16_t i = 0; i < sizeof(request->buffers) / sizeof(int); ++i) {
-    uint64_t buf_id = request->buffers[i];
-    if (buf_id == HSV_REQUEST_BUFFER_ARRAY_ENDING) break;
-    void* buf_ptr = engine->buf_ring_backing + buf_id * INPUT_URING_INPUT_BUF_SIZE;
-    _hsv_ibufring_return(engine, buf_ptr, buf_id);
-    request->buffers[i] = HSV_REQUEST_BUFFER_ARRAY_ENDING;
-  }
-
-  request->current_size = 0;
-}
-
 struct io_uring_sqe* _hsv_enqueue_read(struct hsv_engine_t* engine, struct hsv_request* request, uint64_t req_indx) {
   struct io_uring_sqe* sqe = io_uring_get_sqe(&engine->uring);
   io_uring_prep_read(sqe, request->asock_indx, NULL, INPUT_URING_INPUT_BUF_SIZE, 0);
@@ -974,4 +1235,161 @@ struct io_uring_sqe* __hsv_io_uring_get_sqe(struct io_uring* uring) {
   }
 
   return sqe;
+}
+
+int _hsv_request_buffer_add(struct hsv_request *request, const struct _hsv_request_buffer *const buffer) {
+  const size_t arrlen = sizeof(request->buffers) / sizeof(request->buffers[0]);
+  size_t i = 0;
+  for (; i < arrlen; ++i) {
+    if (request->buffers[i].type == _HSV_REQUEST_BUFFER_NONE) {
+      request->buffers[i] = *buffer;
+
+      return 0;
+    }
+  }
+
+  return 1;
+}
+
+int _hsv_request_buffer_input_buffer_add(struct hsv_request *request, int indx) {
+  auto buffer = (struct _hsv_request_buffer){.type = _HSV_REQUEST_BUFFER_INPUT_BUFFER_OFFSET, .data.input_indx = indx};
+  return _hsv_request_buffer_add(request, &buffer);  
+}
+
+int _hsv_request_buffer_iov_add(struct hsv_request *request, void* iov_base, size_t iov_len) {
+  auto buffer = (struct _hsv_request_buffer){
+    .type = _HSV_REQUEST_BUFFER_INPUT_BUFFER_OFFSET,
+    .data.iovec = (struct iovec){.iov_base = iov_base, .iov_len = iov_len}
+  };
+  return _hsv_request_buffer_add(request, &buffer);  
+}
+
+void _hsv_free_request_buffers(struct hsv_engine_t* engine, struct hsv_request* request) {
+  const size_t arrlen = sizeof(request->buffers) / sizeof(request->buffers[0]);
+  for (uint_fast16_t i = 0; i < arrlen; ++i) {
+    switch (request->buffers[i].type) {
+      case _HSV_REQUEST_BUFFER_NONE:
+      break;
+      case _HSV_REQUEST_BUFFER_INPUT_BUFFER_OFFSET:
+        int buf_id = request->buffers[i].data.input_indx;
+        void* buf_ptr = engine->buf_ring_backing + buf_id * INPUT_URING_INPUT_BUF_SIZE;
+        _hsv_ibufring_return(engine, buf_ptr, buf_id);
+      break;   
+
+      case _HSV_REQUEST_BUFFER_IOV: {
+        struct iovec *iovec = &request->buffers[i].data.iovec;
+        if (!(iovec->iov_len & (_theosl_utils_default_pagesize-1)) && !((size_t)iovec->iov_base & (_theosl_utils_default_pagesize-1))) {
+          if (-1 == munmap(iovec->iov_base, iovec->iov_len)) {
+            LOGW("failed to munmap iov request buffer: %d (%s)", errno, strerror(errno));
+          }
+        }
+      }
+    }
+
+    request->buffers[i].type = _HSV_REQUEST_BUFFER_NONE;
+  }
+}
+
+void _hsv_handle_ssl_read(struct hsv_engine_t* engine, struct io_uring_cqe *cqe) {
+  uint64_t reqid = GET_DYN_USER_DATA(cqe->user_data);
+
+  LOGT("handle ssl read reqid=%zu, res=%d", reqid, cqe->res);
+
+  if (cqe->res == 0 || cqe->res == -EPIPE) {
+    LOGD("connection closed by remote: %d of %lu", engine->requests[reqid].asock_indx, reqid);
+    _hsv_ssl_close_request(engine, reqid);
+    return;
+  }
+  if (cqe->res < 0) {
+    LOGE("read from %d failed: %d (%s)", engine->requests[reqid].asock_indx, -cqe->res, strerror(-cqe->res));
+    _hsv_ssl_close_request(engine, reqid);
+    return;
+  }
+
+  size_t req_indx = GET_DYN_USER_DATA(cqe->user_data);
+  uint16_t buf_id = cqe->flags >> IORING_CQE_BUFFER_SHIFT;
+  char* buffer = (char*)engine->buf_ring_backing + buf_id * INPUT_URING_INPUT_BUF_SIZE; 
+
+  struct hsv_request * request = &engine->requests[reqid];
+
+  if (UNLIKELY((request->flags & _HSV_REQUSET_FLAG_INFLIGHT) == 0)) {
+    _hsv_ibufring_return(engine, buffer, buf_id);
+    return;
+  }
+  
+  BIO *net_bio = request->data.ssl_accept.net_bio;
+  SSL *ssl = request->data.ssl_accept.ssl;
+  size_t written = 0;
+  bio_write:
+  int e = BIO_write_ex(net_bio, buffer + written, cqe->res - written, &written);
+  LOGT("BIO_write: e=%d\twriten=%zu of=%d", e, written, cqe->res);
+  if (!e && !BIO_should_retry(net_bio)) {
+    LOGE("failed to write to net_bio: %d", e);
+    ERR_print_errors_fp(stdout);
+    _hsv_ssl_close_request(engine, req_indx);
+    return;
+  }
+  if (written != cqe->res) {
+    /*
+      WARN
+      THIS is a bit risque coz if ssl want read here and
+      it did not consume enough of the bio the bio might be full and thus written == 0 
+      TODO
+      Doing this correctly is quite a bit complicated because now I need to preserve this buffer and do a write
+      then when the write finishes do SSL_accept then try to give it this buffer again the best way to do this
+      would probably be to create fixed indexes into request buffers where one is a write buffer from bufcache and
+      one is a read buffer from input_buf_ring because at any one time only one read and one write buffer exists
+    */
+    SSL_accept(ssl);
+    goto bio_write;
+  }
+
+  request->flags &= ~_HSV_REQUSET_FLAG_SSL_READ_INFLIGHT;
+  _hsv_ibufring_return(engine, buffer, buf_id);
+
+  _hsv_do_ssl_accept(engine, request, reqid);
+}
+
+void _hsv_handle_ssl_write(struct hsv_engine_t* engine, struct io_uring_cqe *cqe) {
+  uint64_t reqid = GET_DYN_USER_DATA(cqe->user_data);
+
+  LOGT("handle ssl write reqid=%zu", reqid);
+
+  if (cqe->res < 0) {
+    LOGE("write to %d failed: %d (%s)", engine->requests[reqid].asock_indx, -cqe->res, strerror(-cqe->res));
+    _hsv_close_request(engine, reqid);
+    return;
+  }
+
+  struct hsv_request *request = &engine->requests[reqid];
+  struct _hsv_request_buffer *buffer = &request->buffers[__HSV_REQUEST_BUFFER_WRITE_BUFFER_INDEX];
+  buffer->type = _HSV_REQUEST_BUFFER_NONE;
+  int e = _hsv_mbufcache_give(&engine->buf_cache, _HSV_MBUFCACHE_4K_INDX, buffer->data.iovec.iov_base);
+  if (e) {
+    e = munmap(buffer->data.iovec.iov_base, buffer->data.iovec.iov_len);
+    if (e) {
+      LOGW("failed to munmap buffer: %d (%s)", errno, strerror(errno));
+    }
+  }
+  
+  _hsv_do_ssl_accept(engine, request, reqid);
+}
+
+int _hsv_setup_ktls(struct hsv_engine_t *engine, uint64_t reqid, struct hsv_request *request) {
+
+
+  return 0;
+}
+
+void _hsv_handle_ssl_setsockopt(struct hsv_engine_t *engine, struct io_uring_cqe *cqe) {
+  const uint64_t reqid = GET_DYN_USER_DATA(cqe->user_data);
+  struct hsv_request *request = &engine->requests[reqid];
+
+  if (cqe->res < 0) {
+    LOGE("failed to set TLS ULP on socket req=%lu, sock_indx=%u", reqid, request->asock_indx);
+    _hsv_close_request(engine, reqid);
+    return;
+  }
+
+  // _hsv_setup_ktls()
 }

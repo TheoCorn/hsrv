@@ -3,8 +3,6 @@
 #include <stdlib.h>
 
 #include <theosl/log.h>
-#include <theosl/vec.h>
-#include <theosl/ss.h>
 
 
 int main(int argc, char** argv) {
@@ -57,7 +55,11 @@ int main(int argc, char** argv) {
     bh.sfile.flags = 0;
     bh.sfile.src_dir = argv[i];  
 
-    hsv_params_add_block(&params, sep_ptr+1, &bh);
+    int e = hsv_params_add_block(&params, sep_ptr+1, &bh);
+    if (e) {
+      LOGE("failed to add block: %d", e);
+      return 1;
+    }
   }
 
 

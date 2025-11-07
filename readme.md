@@ -18,7 +18,7 @@ These are preallocated and there a quite a few of them 2 fds per pipe * max_conn
 That is 2048 fds just for the pipes. Your open files limit might not be enough in that case use
 `ulimit -n 8192` before running hserv.
 
-The executable `tsrv` serves the contents of `./test` on port `3000`.
+The executable `tsrv` takes multiple arguments of the scheme `<source_dir>:<mount_path>` and flags `--port <port>`.
 
 
 # Notes

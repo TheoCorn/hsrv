@@ -38,9 +38,13 @@
 #include <liburing.h>
 #include <netinet/in.h>
 
+#include <openssl/ssl.h>
+#include <openssl/ssl3.h>
+
 #include "map.h"
 #include "http_headers.h"
 #include "path_tree.h"
+#include "mbufcache.h"
 
 /// indicates the minimum buffer GID the application may use should be accessed after hsv_init (this is not applicable now but for futre use) 
 extern uint64_t hsv_io_uring_buffer_ids_min_free; 
@@ -171,19 +175,48 @@ struct hsv_block_handler {
 MAP_DEF(hsv_file_info)
 #endif
 
-// indicates the end of hsv_request.buffers
-#define HSV_REQUEST_BUFFER_ARRAY_ENDING (-1)
+enum hsv_request_state : uint16_t {
+  HSV_REQUEST_STATE_UNINITIALIZED = 0,
+  HSV_REQUEST_STATE_SSL_ACCEPT,
+  HSV_REQUEST_STATE_CONNECTED,
+};
+
+struct _hsv_request_data_ssl_accept {
+  SSL *ssl;
+  BIO *ssl_bio;
+  BIO *net_bio;
+};
+
+struct _hsv_request_data_send_file {
+  struct hsv_file_info const* file;
+  int64_t file_offset; 
+  int in_pipe_res;
+};
+
+enum _hsv_request_buffer_type {
+  _HSV_REQUEST_BUFFER_NONE = 0, 
+  _HSV_REQUEST_BUFFER_INPUT_BUFFER_OFFSET,
+  _HSV_REQUEST_BUFFER_IOV,
+};
+
+struct _hsv_request_buffer {
+  enum _hsv_request_buffer_type type;
+  union {
+    struct iovec iovec;
+    uint16_t input_indx;
+  } data;
+};
 
 struct hsv_request {
-  uint32_t flags;
+  enum hsv_request_state state;
+  uint16_t flags;
   int asock_indx; // the index into direct files containing the accepted socket
-  size_t current_size;
-  struct {
-    struct hsv_file_info const* file;
-    int64_t file_offset; 
-    int in_pipe_res;
-  } file_sending;
-  int buffers[HSV_MAXIMUM_REQUEST_SIZE / _HSV_MIN_BUFFER_SIZE+1]; // +1 for HSV_MAXIMUM_REQUEST_SIZE != N * INPUT_URING_INPUT_BUF_SIZE
+  union {
+    struct _hsv_request_data_ssl_accept ssl_accept;
+    struct _hsv_request_data_send_file file_sending;
+  } data;
+
+  struct _hsv_request_buffer buffers[HSV_MAXIMUM_REQUEST_SIZE / _HSV_MIN_BUFFER_SIZE+1]; // +1 for HSV_MAXIMUM_REQUEST_SIZE != N * INPUT_URING_INPUT_BUF_SIZE
 };
 
 enum _hsv_fixed_file_arr_flags : uint32_t {
@@ -199,11 +232,25 @@ struct _hsv_fixed_file_arr {
   uint32_t flags;
 };
 
+enum hsv_params_flags_b0 {
+  HSV_PARAMS_IPV4_BIND = 1,
+  HSV_PARAMS_IPV6_BIND = 2,
+};
+
+#define HSV_PARAMS_PORT_NO_BIND 0U
+
 struct hsv_params {
   uint16_t port; // UNSECURE PORT (HTTP port)
   uint16_t sport; // SECURE PORT (HTTPS port)
   struct in_addr address4;
   struct in6_addr address6;
+
+  uint8_t flags[1];
+
+  struct {
+    const char *  cert_path;
+    const char* pkey_path;
+  } tls;
 
   struct hsv_path_handler default_handler;
 
@@ -240,15 +287,6 @@ MAP_DEF(hsv_path_handler)
 
 struct hsv_engine_t {
   struct io_uring uring;
-  // struct {
-    // Map(hsv_file_info) fd_map;
-
-    // char* key_buf;
-    // size_t key_buf_size;
-    // char* key_buf_next;
-
-    // void* buf_ring_backing;
-  // } static_server;
 
   void* buf_ring_backing;
 
@@ -267,6 +305,12 @@ struct hsv_engine_t {
   struct io_uring_buf_ring* input_buffer_ring;
 
   struct hsv_path_handler default_handler;
+
+  struct _hsv_mbufcache buf_cache;
+
+  struct {
+    SSL_CTX* ctx;
+  } tls;
 };
 
 // TODO make it return engine and let the result be out param

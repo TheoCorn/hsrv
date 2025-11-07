@@ -1,0 +1,20 @@
+[Unit]
+Description=tsrv
+
+[Service]
+ExecStart="/home/theo/Projects/clang/hserv/tsrv" "/home/theo/Projects/clang/hserv/test:/test" "--port" "4000" "--sport" "4043"
+User=theo
+
+StandardOutput=/home/theo/Projects/clang/hserv/tsrv.log
+StandardError=/home/theo/Projects/clang/hserv/tsrv.elog
+
+Nice=-20
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=99
+
+LimitNOFILE=65536
+LimitCORE=infinity
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

@@ -575,7 +575,7 @@ read_fext:
     } else if (!strncasecmp(ext_start, "gif", 3)) {
       SET_CONTENT_TYPE(HTTP_CONTENT_TYPE_ID_GIF);
     } else if (!strncasecmp(ext_start, "svg", 3)) {
-      SET_CONTENT_TYPE(HTTP_CONTENT_TYPE_ID_PNG);
+      SET_CONTENT_TYPE(HTTP_CONTENT_TYPE_ID_SVG);
     } else if (!strncasecmp(ext_start, "pdf", 3)) {
       SET_CONTENT_TYPE(HTTP_CONTENT_TYPE_ID_PDF);
     } else if (!strncasecmp(ext_start, "csv", 3)) {

@@ -3,10 +3,15 @@
 
 // inline int _hsv_params_path_add(struct hsv_params* const params, const char* const path, const size_tconst struct hsv_path_handler* const handler);
 int hsv_params_init(struct hsv_params* params) {
-  params->sport = 0;
-  params->port = 0;
+  params->sport = HSV_PARAMS_PORT_NO_BIND ;
+  params->port = HSV_PARAMS_PORT_NO_BIND ;
   params->address4.s_addr = INADDR_ANY;
   params->address6 = in6addr_any;
+
+  params->flags[0] = HSV_PARAMS_IPV4_BIND | HSV_PARAMS_IPV6_BIND;
+
+  params->tls.cert_path = "./cert.pem";
+  params->tls.pkey_path = "./key.pem";
 
   params->block_paths = NULL;
   params->block_handler = NULL;
@@ -51,6 +56,7 @@ void hsv_params_dprint(struct hsv_params* params) {
         printf("ctype=%u, cencoding=%lu, finfo={fd=%d, file_size=%ld}}\n", ssp->ctype, ssp->cencodeing, ssp->finfo.fd, ssp->finfo.file_size);
       }
       break;
+      case HSV_HANDLER_STATIC_FILE_RAW:
       case HSV_HANDLER_EXTERNAL_HANDLER:
       case HSV_HANDLER_REDIRECT:
       break;
@@ -98,7 +104,7 @@ inline int _hsv_params_add_sf_block(struct hsv_params* params, const char* const
 int hsv_params_add_block(struct hsv_params* params, const char* const path, struct hsv_block_handler* handler) {
   switch (handler->htype) {
     case HSV_HANDLER_STATIC_FILE:
-      _hsv_params_add_sf_block(params, path, handler);
+      return _hsv_params_add_sf_block(params, path, handler);
     break;
     case HSV_HANDLER_REDIRECT:
     case HSV_HANDLER_EXTERNAL_HANDLER:

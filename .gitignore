@@ -5,3 +5,6 @@ test
 .cache
 compile_commands.json
 min_reproduce
+cert.pem
+key.pem
+*.log
